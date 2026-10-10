@@ -1,0 +1,61 @@
+name: Django CI/CD Pipeline
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: |
+          pip install -r requirements.txt
+          python manage.py test
+
+  build:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: test
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: build
+    environment:
+      name: production
+      url: https://yourdomain.com
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+
+      - name: Get EC2 IP
+        run: echo "EC2_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Run Ansible Playbook
+        run: |
+          ansible-playbook -i $EC2_IP, -u ubuntu --private-key ~/.ssh/id_rsa playbook.yml

@@ -1,0 +1,43 @@
+- hosts: all
+  become: yes
+  tasks:
+    - name: Update apt packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+
+    - name: Install dependencies
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - git
+          - nginx
+        state: present
+
+    - name: Clone project repo
+      git:
+        repo: "https://github.com/your/repo.git"
+        dest: "/home/ubuntu/project"
+        version: "main"
+
+    - name: Install Python requirements
+      pip:
+        requirements: /home/ubuntu/project/requirements.txt
+        executable: pip3
+
+    - name: Run Django migrations
+      command: python3 manage.py migrate
+      args:
+        chdir: /home/ubuntu/project
+
+    - name: Collect static files
+      command: python3 manage.py collectstatic --noinput
+      args:
+        chdir: /home/ubuntu/project
+
+    - name: Configure and start Nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
