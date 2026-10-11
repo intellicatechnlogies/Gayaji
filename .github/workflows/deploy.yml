@@ -1,61 +1,78 @@
-name: Django CI/CD Pipeline
+deploy:
+  runs-on: ubuntu-latest
+  if: github.event_name == 'push'
+  needs: build
+  environment:
+    name: production
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-on:
-  pull_request:
-    branches: ["main"]
-  push:
-    branches: ["main"]
+    - name: Deploy to AWS EC2
+      uses: appleboy/ssh-action@v0.1.10
+      with:
+        host: ${{ secrets.EC2_HOST }}          # EC2 Public IP
+        username: ${{ secrets.EC2_USER }}      # usually 'ubuntu' or 'ec2-user'
+        key: ${{ secrets.EC2_SSH_KEY }}        # private key stored in GitHub Secrets
+        script: |
+          PROJECT_DIR=/home/ubuntu/Gayaji
+          VENV_DIR=$PROJECT_DIR/venv
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - run: |
+          # Create project directory if missing
+          sudo mkdir -p $PROJECT_DIR
+          sudo chown -R ubuntu:ubuntu $PROJECT_DIR
+
+          cd $PROJECT_DIR
+
+          # Ensure virtual environment exists
+          if [ ! -d "$VENV_DIR" ]; then
+            python3 -m venv $VENV_DIR
+          fi
+          source $VENV_DIR/bin/activate
+
+          # Pull latest code
+          if [ ! -d ".git" ]; then
+            git clone https://github.com/intellicatechnlogies/Gayaji.git $PROJECT_DIR
+          else
+            git pull origin main
+          fi
+
+          # Install dependencies
           pip install -r requirements.txt
-          python manage.py test
 
-  build:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    needs: test
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
+          # Django migrations + static files
+          python manage.py migrate
+          python manage.py collectstatic --noinput
 
-  deploy:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    needs: build
-    environment:
-      name: production
-      url: https://yourdomain.com
-    steps:
-      - uses: actions/checkout@v3
+          # Permissions
+          sudo chown -R ubuntu:www-data $PROJECT_DIR
+          sudo chmod -R 755 $PROJECT_DIR/staticfiles
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+          # Gunicorn setup
+          sudo mkdir -p /run/gunicorn
+          sudo chown ubuntu:www-data /run/gunicorn
 
-      - name: Terraform Init
-        run: terraform init
+          # Create/Update Gunicorn systemd service
+          sudo tee /etc/systemd/system/gunicorn.service > /dev/null << EOF
+          [Unit]
+          Description=Gunicorn instance for Django project
+          After=network.target
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
+          [Service]
+          User=ubuntu
+          Group=www-data
+          WorkingDirectory=$PROJECT_DIR
+          ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock backend/config.wsgi:application
 
-      - name: Get EC2 IP
-        run: echo "EC2_IP=$(terraform output -raw ec2_public_ip)" >> $GITHUB_ENV
+          [Install]
+          WantedBy=multi-user.target
+          EOF
 
-      - name: Install Ansible
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ansible
+          sudo systemctl daemon-reload
+          sudo systemctl enable gunicorn
+          sudo systemctl restart gunicorn
 
-      - name: Run Ansible Playbook
-        run: |
-          ansible-playbook -i $EC2_IP, -u ubuntu --private-key ~/.ssh/id_rsa playbook.yml
+          # Nginx setup
+          sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+          sudo nginx -t
+          sudo systemctl reload nginx
