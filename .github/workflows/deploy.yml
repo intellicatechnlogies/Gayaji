@@ -2,9 +2,9 @@ name: Django CI/CD Pipeline
 
 on:
   pull_request:
-    branches: ["main"]   # Run tests when a PR targets main
+    branches: ["main"]
   push:
-    branches: ["main"]   # Run build+test+deploy when code is merged/pushed to main
+    branches: ["main"]
 
 jobs:
   test:
@@ -54,9 +54,9 @@ jobs:
       - name: Deploy to AWS EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: ${{ secrets.HOST }}          # EC2 Public IP
-          username: ${{ secrets.USER }}      # usually 'ubuntu' or 'ec2-user'
-          key: ${{ secrets.SSH }}            # private key stored in GitHub Secrets
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.SSH }}
           script: |
             PROJECT_DIR=/home/ubuntu/Gayaji
             VENV_DIR=$PROJECT_DIR/venv
@@ -115,7 +115,7 @@ jobs:
             User=ubuntu
             Group=www-data
             WorkingDirectory=$PROJECT_DIR
-            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock deploy/config.wsgi:application
+            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock config.wsgi:application
 
             [Install]
             WantedBy=multi-user.target
@@ -128,6 +128,9 @@ jobs:
             # Nginx setup
             sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
+            # Remove default site to avoid conflicts
+            sudo rm -f /etc/nginx/sites-enabled/default
+
             # Write site config
             sudo tee /etc/nginx/sites-available/visitgayaji.com > /dev/null << EOF
             server {
@@ -135,7 +138,12 @@ jobs:
                 server_name visitgayaji.com www.visitgayaji.com;
 
                 location = /favicon.ico { access_log off; log_not_found off; }
+
                 location /static/ {
+                    root $PROJECT_DIR;
+                }
+
+                location /media/ {
                     root $PROJECT_DIR;
                 }
 
@@ -153,6 +161,9 @@ jobs:
             # SSL certificate
             sudo certbot --nginx -d visitgayaji.com -d www.visitgayaji.com \
               --non-interactive --agree-tos -m sales@intellicatechnology.com --force-renewal
+
+            # Health check
+            curl -I https://visitgayaji.com || true
 
             # Show logs for debugging
             sudo journalctl -u gunicorn -n 50 --no-pager
