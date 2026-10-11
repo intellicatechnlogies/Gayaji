@@ -97,15 +97,20 @@ jobs:
             python manage.py migrate
             python manage.py collectstatic --noinput
 
-            # Permissions
+            # Permissions (fix for Nginx static/media access)
             sudo chown -R ubuntu:www-data $PROJECT_DIR
-            sudo chmod -R 755 $PROJECT_DIR/staticfiles
+            sudo chmod -R 755 $PROJECT_DIR
+
+            sudo chown -R ubuntu:www-data $PROJECT_DIR/staticfiles $PROJECT_DIR/media
+            sudo find $PROJECT_DIR/staticfiles -type d -exec chmod 755 {} \;
+            sudo find $PROJECT_DIR/staticfiles -type f -exec chmod 644 {} \;
+            sudo find $PROJECT_DIR/media -type d -exec chmod 755 {} \;
+            sudo find $PROJECT_DIR/media -type f -exec chmod 644 {} \;
 
             # Gunicorn setup
             sudo mkdir -p /run/gunicorn
             sudo chown ubuntu:www-data /run/gunicorn
 
-            # Create/Update Gunicorn systemd service
             sudo tee /etc/systemd/system/gunicorn.service > /dev/null << EOF
             [Unit]
             Description=Gunicorn instance for Django project
