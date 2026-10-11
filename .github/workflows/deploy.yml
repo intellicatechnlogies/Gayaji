@@ -98,6 +98,10 @@ jobs:
             python manage.py collectstatic --noinput
 
             # Permissions (fix for Nginx static/media access)
+            sudo chmod 755 /home
+            sudo chmod 755 /home/ubuntu
+            sudo chmod 755 $PROJECT_DIR
+
             sudo chown -R ubuntu:www-data $PROJECT_DIR
             sudo chmod -R 755 $PROJECT_DIR
 
@@ -135,9 +139,20 @@ jobs:
             sudo rm -f /etc/nginx/sites-enabled/default
 
             sudo tee /etc/nginx/sites-available/visitgayaji.com > /dev/null << EOF
+            # Redirect HTTP to HTTPS
             server {
                 listen 80;
                 server_name visitgayaji.com www.visitgayaji.com;
+                return 301 https://\$host\$request_uri;
+            }
+
+            # HTTPS server block
+            server {
+                listen 443 ssl;
+                server_name visitgayaji.com www.visitgayaji.com;
+
+                ssl_certificate /etc/letsencrypt/live/visitgayaji.com/fullchain.pem;
+                ssl_certificate_key /etc/letsencrypt/live/visitgayaji.com/privkey.pem;
 
                 location = /favicon.ico { access_log off; log_not_found off; }
 
@@ -167,7 +182,7 @@ jobs:
             # Health check
             curl -I https://visitgayaji.com || true
 
-            # Show logs for debugging
+          
             # Ensure Nginx can traverse parent directories
             sudo chmod 755 /home
             sudo chmod 755 /home/ubuntu
@@ -180,6 +195,7 @@ jobs:
             sudo nginx -t
             sudo systemctl reload nginx
             sudo systemctl restart gunicorn
-
+            
+            # Show logs for debugging
             sudo journalctl -u gunicorn -n 50 --no-pager
             sudo tail -n 50 /var/log/nginx/error.log
