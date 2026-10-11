@@ -70,6 +70,16 @@ jobs:
             sudo mkdir -p $PROJECT_DIR
             sudo chown -R ubuntu:ubuntu $PROJECT_DIR
 
+            # Pull latest code
+            if [ ! -d "$PROJECT_DIR/.git" ]; then
+              sudo rm -rf $PROJECT_DIR/*
+              git clone https://github.com/intellicatechnlogies/Gayaji.git $PROJECT_DIR
+            else
+              cd $PROJECT_DIR
+              git fetch origin main
+              git reset --hard origin/main
+            fi
+
             cd $PROJECT_DIR
 
             # Ensure virtual environment exists
@@ -78,16 +88,10 @@ jobs:
             fi
             source $VENV_DIR/bin/activate
 
-            # Pull latest code
-            if [ ! -d ".git" ]; then
-              git clone https://github.com/intellicatechnlogies/Gayaji.git $PROJECT_DIR
-            else
-              git pull origin main
-            fi
-
-            # Install dependencies
+            # Install dependencies (including Gunicorn)
             pip install --upgrade pip
             pip install -r requirements.txt
+            pip install gunicorn
 
             # Django migrations + static files
             python manage.py migrate
@@ -111,7 +115,7 @@ jobs:
             User=ubuntu
             Group=www-data
             WorkingDirectory=$PROJECT_DIR
-            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock backend/config.wsgi:application
+            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock deploy/config.wsgi:application
 
             [Install]
             WantedBy=multi-user.target
@@ -149,3 +153,7 @@ jobs:
             # SSL certificate
             sudo certbot --nginx -d visitgayaji.com -d www.visitgayaji.com \
               --non-interactive --agree-tos -m sales@intellicatechnology.com --force-renewal
+
+            # Show logs for debugging
+            sudo journalctl -u gunicorn -n 50 --no-pager
+            sudo tail -n 50 /var/log/nginx/error.log
