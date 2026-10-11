@@ -128,6 +128,9 @@ jobs:
             # Nginx setup
             sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
 
+            # Remove default site to avoid conflicts
+            sudo rm -f /etc/nginx/sites-enabled/default
+
             # Write site config
             sudo tee /etc/nginx/sites-available/visitgayaji.com > /dev/null << EOF
             server {
@@ -158,6 +161,9 @@ jobs:
             # SSL certificate
             sudo certbot --nginx -d visitgayaji.com -d www.visitgayaji.com \
               --non-interactive --agree-tos -m sales@intellicatechnology.com --force-renewal
+
+            # Health check
+            curl -I https://visitgayaji.com || true
 
             # Show logs for debugging
             sudo journalctl -u gunicorn -n 50 --no-pager
