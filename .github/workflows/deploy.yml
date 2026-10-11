@@ -168,5 +168,18 @@ jobs:
             curl -I https://visitgayaji.com || true
 
             # Show logs for debugging
+            # Ensure Nginx can traverse parent directories
+            sudo chmod 755 /home
+            sudo chmod 755 /home/ubuntu
+            sudo chmod 755 $PROJECT_DIR
+
+            # Fix static/media ownership and permissions
+            sudo chown -R ubuntu:www-data $PROJECT_DIR/staticfiles $PROJECT_DIR/media
+            sudo find $PROJECT_DIR/staticfiles -type d -exec chmod 755 {} \;
+            sudo find $PROJECT_DIR/staticfiles -type f -exec chmod 644 {} \;
+            sudo nginx -t
+            sudo systemctl reload nginx
+            sudo systemctl restart gunicorn
+
             sudo journalctl -u gunicorn -n 50 --no-pager
             sudo tail -n 50 /var/log/nginx/error.log
