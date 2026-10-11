@@ -2,6 +2,7 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+from django.contrib.staticfiles import finders
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
@@ -57,6 +58,10 @@ class TourismApiTests(TestCase):
         self.assertContains(response, "Template destination")
         self.assertContains(response, 'id="admin-panel"')
         self.assertContains(response, 'id="booking-backdrop"')
+
+    def test_static_assets_are_discoverable_for_collectstatic(self):
+        self.assertIsNotNone(finders.find("styles.css"))
+        self.assertIsNotNone(finders.find("site.js"))
 
     def test_admin_login_protects_destination_crud_and_logout_revokes_session(self):
         payload = {
