@@ -17,24 +17,24 @@
 
     - name: Clone project repo
       git:
-        repo: "https://github.com/your/repo.git"
-        dest: "/home/ubuntu/project"
+        repo: "https://github.com/intellicatechnlogies/Gayaji.git"
+        dest: "/home/ubuntu/Gayaji"
         version: "main"
 
     - name: Install Python requirements
       pip:
-        requirements: /home/ubuntu/project/requirements.txt
+        requirements: /home/ubuntu/Gayaji/requirements.txt
         executable: pip3
 
     - name: Run Django migrations
       command: python3 manage.py migrate
       args:
-        chdir: /home/ubuntu/project
+        chdir: /home/ubuntu/Gayaji
 
     - name: Collect static files
       command: python3 manage.py collectstatic --noinput
       args:
-        chdir: /home/ubuntu/project
+        chdir: /home/ubuntu/Gayaji
 
     - name: Configure and start Nginx
       service:
