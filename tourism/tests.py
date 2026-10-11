@@ -1,9 +1,39 @@
 import json
+from io import StringIO
+from unittest.mock import patch
 
+from django.core.management import CommandError, call_command
 from django.test import TestCase
 
 from .models import AdminAccount, Booking, Place
-from .views import hash_password
+from .views import hash_password, verify_password
+
+
+class BootstrapDataCommandTests(TestCase):
+    def test_bootstrap_prompts_for_admin_and_stores_password_hash(self):
+        password = "Gayaji"
+        output = StringIO()
+        with (
+            patch("builtins.input", return_value="  FirstAdmin  "),
+            patch("getpass.getpass", side_effect=[password, password]),
+        ):
+            call_command("bootstrap_data", stdout=output)
+
+        admin = AdminAccount.objects.get(username="firstadmin")
+        self.assertNotEqual(admin.password_hash, password)
+        self.assertTrue(verify_password(password, admin.password_hash))
+        self.assertEqual(Place.objects.count(), 8)
+        self.assertIn("Created initial admin account 'firstadmin'.", output.getvalue())
+
+    def test_bootstrap_rejects_mismatched_admin_passwords(self):
+        with (
+            patch("builtins.input", return_value="admin"),
+            patch("getpass.getpass", side_effect=["first-password-long", "different-password-long"]),
+            self.assertRaises(CommandError),
+        ):
+            call_command("bootstrap_data", stdout=StringIO())
+
+        self.assertFalse(AdminAccount.objects.exists())
 
 
 class TourismApiTests(TestCase):

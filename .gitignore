@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+.venv-1/
+venv/
+
+# Local configuration and secrets
+.env
+.env.*

@@ -1,4 +1,4 @@
-import os
+import getpass
 
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
@@ -67,19 +67,19 @@ SEED_PLACES = [
 
 
 class Command(BaseCommand):
-    help = "Seed sample attractions and create the initial admin from .env when needed."
+    help = "Seed sample attractions and interactively create the initial admin when needed."
 
     def handle(self, *args, **options):
-        username = os.getenv("ADMIN_USERNAME", "").strip().lower()
-        password = os.getenv("ADMIN_PASSWORD", "")
-        if bool(username) != bool(password):
-            raise CommandError("Set both ADMIN_USERNAME and ADMIN_PASSWORD in .env.")
-
         if not AdminAccount.objects.exists():
-            if not username or len(password) < 12:
-                raise CommandError(
-                    "Set ADMIN_USERNAME and an ADMIN_PASSWORD of at least 12 characters before bootstrapping."
-                )
+            username = input("Admin username: ").strip().lower()
+            if not username:
+                raise CommandError("Admin username cannot be empty.")
+            password = getpass.getpass("Admin password (at least 6 characters): ")
+            confirmation = getpass.getpass("Confirm admin password: ")
+            if password != confirmation:
+                raise CommandError("Admin passwords do not match.")
+            if len(password) < 6:
+                raise CommandError("Admin password must be at least 6 characters.")
             AdminAccount.objects.create(username=username, password_hash=hash_password(password))
             self.stdout.write(self.style.SUCCESS(f"Created initial admin account '{username}'."))
         else:
