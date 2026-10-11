@@ -56,10 +56,15 @@ jobs:
         with:
           host: ${{ secrets.HOST }}          # EC2 Public IP
           username: ${{ secrets.USER }}      # usually 'ubuntu' or 'ec2-user'
-          key: ${{ secrets.SSH }}        # private key stored in GitHub Secrets
+          key: ${{ secrets.SSH }}            # private key stored in GitHub Secrets
           script: |
             PROJECT_DIR=/home/ubuntu/Gayaji
             VENV_DIR=$PROJECT_DIR/venv
+
+            # --- Bootstrap system packages ---
+            sudo apt-get update -y
+            sudo apt-get install -y python3-pip python3-venv python3-dev build-essential \
+                                    nginx certbot python3-certbot-nginx git
 
             # Ensure project directory exists
             sudo mkdir -p $PROJECT_DIR
@@ -81,6 +86,7 @@ jobs:
             fi
 
             # Install dependencies
+            pip install --upgrade pip
             pip install -r requirements.txt
 
             # Django migrations + static files
@@ -105,7 +111,7 @@ jobs:
             User=ubuntu
             Group=www-data
             WorkingDirectory=$PROJECT_DIR
-            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock deploy/config.wsgi:application
+            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock gayaji.wsgi:application
 
             [Install]
             WantedBy=multi-user.target
