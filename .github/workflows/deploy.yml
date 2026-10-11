@@ -111,7 +111,7 @@ jobs:
             User=ubuntu
             Group=www-data
             WorkingDirectory=$PROJECT_DIR
-            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock gayaji.wsgi:application
+            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock backend/config.wsgi:application
 
             [Install]
             WantedBy=multi-user.target
@@ -123,8 +123,28 @@ jobs:
 
             # Nginx setup
             sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+            # Write site config
+            sudo tee /etc/nginx/sites-available/visitgayaji.com > /dev/null << EOF
+            server {
+                listen 80;
+                server_name visitgayaji.com www.visitgayaji.com;
+
+                location = /favicon.ico { access_log off; log_not_found off; }
+                location /static/ {
+                    root $PROJECT_DIR;
+                }
+
+                location / {
+                    include proxy_params;
+                    proxy_pass http://unix:/run/gunicorn/gunicorn.sock;
+                }
+            }
+            EOF
+
+            sudo ln -sf /etc/nginx/sites-available/visitgayaji.com /etc/nginx/sites-enabled/
             sudo nginx -t
-            sudo systemctl reload nginx
+            sudo systemctl restart nginx
 
             # SSL certificate
             sudo certbot --nginx -d visitgayaji.com -d www.visitgayaji.com \
