@@ -1,78 +1,125 @@
-deploy:
-  runs-on: ubuntu-latest
-  if: github.event_name == 'push'
-  needs: build
-  environment:
-    name: production
-  steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+name: Django CI/CD Pipeline
 
-    - name: Deploy to AWS EC2
-      uses: appleboy/ssh-action@v0.1.10
-      with:
-        host: ${{ secrets.HOST }}          # EC2 Public IP
-        username: ${{ secrets.USER }}      # usually 'ubuntu' or 'ec2-user'
-        key: ${{ secrets.SSH }}        # private key stored in GitHub Secrets
-        script: |
-          PROJECT_DIR=/home/ubuntu/Gayaji
-          VENV_DIR=$PROJECT_DIR/venv
+on:
+  pull_request:
+    branches: ["main"]   # Run tests when a PR targets main
+  push:
+    branches: ["main"]   # Run build+test+deploy when code is merged/pushed to main
 
-          # Create project directory if missing
-          sudo mkdir -p $PROJECT_DIR
-          sudo chown -R ubuntu:ubuntu $PROJECT_DIR
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-          cd $PROJECT_DIR
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-          # Ensure virtual environment exists
-          if [ ! -d "$VENV_DIR" ]; then
-            python3 -m venv $VENV_DIR
-          fi
-          source $VENV_DIR/bin/activate
+      - name: Run tests
+        run: |
+          pip install -r requirements.txt
+          python manage.py test
 
-          # Pull latest code
-          if [ ! -d ".git" ]; then
-            git clone https://github.com/intellicatechnlogies/Gayaji.git $PROJECT_DIR
-          else
-            git pull origin main
-          fi
+  build:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-          # Install dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
           pip install -r requirements.txt
 
-          # Django migrations + static files
-          python manage.py migrate
-          python manage.py collectstatic --noinput
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: build
+    environment:
+      name: production
+      url: https://visitgayaji.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-          # Permissions
-          sudo chown -R ubuntu:www-data $PROJECT_DIR
-          sudo chmod -R 755 $PROJECT_DIR/staticfiles
+      - name: Deploy to AWS EC2
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}          # EC2 Public IP
+          username: ${{ secrets.USER }}      # usually 'ubuntu' or 'ec2-user'
+          key: ${{ secrets.SSH }}        # private key stored in GitHub Secrets
+          script: |
+            PROJECT_DIR=/home/ubuntu/Gayaji
+            VENV_DIR=$PROJECT_DIR/venv
 
-          # Gunicorn setup
-          sudo mkdir -p /run/gunicorn
-          sudo chown ubuntu:www-data /run/gunicorn
+            # Ensure project directory exists
+            sudo mkdir -p $PROJECT_DIR
+            sudo chown -R ubuntu:ubuntu $PROJECT_DIR
 
-          # Create/Update Gunicorn systemd service
-          sudo tee /etc/systemd/system/gunicorn.service > /dev/null << EOF
-          [Unit]
-          Description=Gunicorn instance for Django project
-          After=network.target
+            cd $PROJECT_DIR
 
-          [Service]
-          User=ubuntu
-          Group=www-data
-          WorkingDirectory=$PROJECT_DIR
-          ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock backend/config.wsgi:application
+            # Ensure virtual environment exists
+            if [ ! -d "$VENV_DIR" ]; then
+              python3 -m venv $VENV_DIR
+            fi
+            source $VENV_DIR/bin/activate
 
-          [Install]
-          WantedBy=multi-user.target
-          EOF
+            # Pull latest code
+            if [ ! -d ".git" ]; then
+              git clone https://github.com/intellicatechnlogies/Gayaji.git $PROJECT_DIR
+            else
+              git pull origin main
+            fi
 
-          sudo systemctl daemon-reload
-          sudo systemctl enable gunicorn
-          sudo systemctl restart gunicorn
+            # Install dependencies
+            pip install -r requirements.txt
 
-          # Nginx setup
-          sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-          sudo nginx -t
-          sudo systemctl reload nginx
+            # Django migrations + static files
+            python manage.py migrate
+            python manage.py collectstatic --noinput
+
+            # Permissions
+            sudo chown -R ubuntu:www-data $PROJECT_DIR
+            sudo chmod -R 755 $PROJECT_DIR/staticfiles
+
+            # Gunicorn setup
+            sudo mkdir -p /run/gunicorn
+            sudo chown ubuntu:www-data /run/gunicorn
+
+            # Create/Update Gunicorn systemd service
+            sudo tee /etc/systemd/system/gunicorn.service > /dev/null << EOF
+            [Unit]
+            Description=Gunicorn instance for Django project
+            After=network.target
+
+            [Service]
+            User=ubuntu
+            Group=www-data
+            WorkingDirectory=$PROJECT_DIR
+            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock deploy/config.wsgi:application
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            sudo systemctl daemon-reload
+            sudo systemctl enable gunicorn
+            sudo systemctl restart gunicorn
+
+            # Nginx setup
+            sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+            sudo nginx -t
+            sudo systemctl reload nginx
+
+            # SSL certificate
+            sudo certbot --nginx -d visitgayaji.com -d www.visitgayaji.com \
+              --non-interactive --agree-tos -m sales@intellicatechnology.com --force-renewal
