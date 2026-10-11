@@ -64,7 +64,7 @@ jobs:
             # --- Bootstrap system packages ---
             sudo apt-get update -y
             sudo apt-get install -y python3-pip python3-venv python3-dev build-essential \
-                                    nginx certbot python3-certbot-nginx git
+              nginx certbot python3-certbot-nginx git
 
             # Ensure project directory exists
             sudo mkdir -p $PROJECT_DIR
@@ -127,11 +127,8 @@ jobs:
 
             # Nginx setup
             sudo mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-
-            # Remove default site to avoid conflicts
             sudo rm -f /etc/nginx/sites-enabled/default
 
-            # Write site config
             sudo tee /etc/nginx/sites-available/visitgayaji.com > /dev/null << EOF
             server {
                 listen 80;
@@ -140,11 +137,11 @@ jobs:
                 location = /favicon.ico { access_log off; log_not_found off; }
 
                 location /static/ {
-                    root $PROJECT_DIR;
+                    alias $PROJECT_DIR/staticfiles/;
                 }
 
                 location /media/ {
-                    root $PROJECT_DIR;
+                    alias $PROJECT_DIR/media/;
                 }
 
                 location / {
