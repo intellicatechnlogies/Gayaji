@@ -11,9 +11,9 @@ deploy:
     - name: Deploy to AWS EC2
       uses: appleboy/ssh-action@v0.1.10
       with:
-        host: ${{ secrets.EC2_HOST }}          # EC2 Public IP
-        username: ${{ secrets.EC2_USER }}      # usually 'ubuntu' or 'ec2-user'
-        key: ${{ secrets.EC2_SSH_KEY }}        # private key stored in GitHub Secrets
+        host: ${{ secrets.HOST }}          # EC2 Public IP
+        username: ${{ secrets.USER }}      # usually 'ubuntu' or 'ec2-user'
+        key: ${{ secrets.SSH }}        # private key stored in GitHub Secrets
         script: |
           PROJECT_DIR=/home/ubuntu/Gayaji
           VENV_DIR=$PROJECT_DIR/venv
