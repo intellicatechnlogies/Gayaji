@@ -2,9 +2,9 @@ name: Django CI/CD Pipeline
 
 on:
   pull_request:
-    branches: ["main"]   # Run tests when a PR targets main
+    branches: ["main"]
   push:
-    branches: ["main"]   # Run build+test+deploy when code is merged/pushed to main
+    branches: ["main"]
 
 jobs:
   test:
@@ -54,9 +54,9 @@ jobs:
       - name: Deploy to AWS EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: ${{ secrets.HOST }}          # EC2 Public IP
-          username: ${{ secrets.USER }}      # usually 'ubuntu' or 'ec2-user'
-          key: ${{ secrets.SSH }}            # private key stored in GitHub Secrets
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USER }}
+          key: ${{ secrets.SSH }}
           script: |
             PROJECT_DIR=/home/ubuntu/Gayaji
             VENV_DIR=$PROJECT_DIR/venv
@@ -115,7 +115,7 @@ jobs:
             User=ubuntu
             Group=www-data
             WorkingDirectory=$PROJECT_DIR
-            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock deploy/config.wsgi:application
+            ExecStart=$VENV_DIR/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/gunicorn.sock config.wsgi:application
 
             [Install]
             WantedBy=multi-user.target
