@@ -135,7 +135,12 @@ jobs:
                 server_name visitgayaji.com www.visitgayaji.com;
 
                 location = /favicon.ico { access_log off; log_not_found off; }
+
                 location /static/ {
+                    root $PROJECT_DIR;
+                }
+
+                location /media/ {
                     root $PROJECT_DIR;
                 }
 
