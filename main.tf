@@ -1,12 +1,12 @@
 provider "aws" {
-  region     = ${{ secrets.region }}
-  access_key = ${{ secrets.ACCESS_KEY }}
-  secret_key = ${{ secrets.SECRET_KEY }}
+  region     = var.region
+  access_key = var.ACCESS_KEY
+  secret_key = var.SECRET_KEY
 }
 
 resource "aws_key_pair" "my_key" {
   key_name   = "my-key"
-  public_key = ${{ secrets.SSH_KEY }}
+  public_key = var.SSH_KEY
 }
 
 resource "aws_security_group" "ec2_sg" {
