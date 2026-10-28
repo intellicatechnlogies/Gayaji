@@ -221,7 +221,7 @@ class TourismApiTests(TestCase):
             run_backup_scheduler(stop_event)
 
         send_backup.assert_called_once_with("send_database_backup")
-        self.assertEqual(BACKUP_INTERVAL_SECONDS, 300)
+        self.assertEqual(BACKUP_INTERVAL_SECONDS, 3600)
 
     def test_app_startup_only_enables_scheduler_for_web_process(self):
         from tourism.apps import TourismConfig
