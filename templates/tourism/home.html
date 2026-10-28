@@ -13,13 +13,13 @@
     <link rel="stylesheet" href="{% static 'styles.css' %}">
     <script defer src="{% static 'site.js' %}"></script>
   </head>
-  <body>
+  <body class="{% if admin_page %}admin-page{% endif %}" data-admin-page="{{ admin_page|yesno:'true,false' }}">
     <div class="topline">
       <span data-en="✦ A SLOWER, MORE MEANINGFUL WAY TO SEE BIHAR" data-hi="✦ बिहार को धीरे-धीरे, करीब से जानें">✦ A SLOWER, MORE MEANINGFUL WAY TO SEE BIHAR</span>
       <span class="topline-right"><a href="mailto:support@intellicatechnology.com">support@intellicatechnology.com</a>　·　GAYA, INDIA</span>
     </div>
     <header class="site-header">
-      <a class="brand" href="#top">
+      <a class="brand" href="{% if admin_page %}/{% else %}#top{% endif %}">
         <span class="brand-mark">✺</span>
         <span class="brand-name">Bihar Beyond<small class="brand-sub">Gaya · Nalanda · Rajgir</small></span>
       </a>
@@ -195,9 +195,9 @@
     </div>
 
     <div class="admin-scrim" id="admin-scrim" hidden></div>
-    <aside class="admin-panel" id="admin-panel" aria-label="Manage destinations" hidden>
-      <div class="admin-toolbar"><div><div class="section-kicker">BIHAR BEYOND</div><h2 data-en="Manage destinations" data-hi="गंतव्य प्रबंधित करें">Manage destinations</h2></div><button class="modal-close" type="button" data-close-admin aria-label="Close admin panel">×</button></div>
-      <p class="admin-description" data-en="Create, update and remove the destinations shown on the public site." data-hi="वेबसाइट पर दिखने वाले गंतव्य जोड़ें, बदलें या हटाएं।">Create, update and remove the destinations shown on the public site.</p>
+    <aside class="admin-panel" id="admin-panel" aria-label="Manage local listings" hidden>
+      <div class="admin-toolbar"><div><div class="section-kicker">BIHAR BEYOND</div><h2 data-en="Manage local listings" data-hi="स्थानीय जानकारी प्रबंधित करें">Manage local listings</h2></div>{% if admin_page %}<a class="admin-back-link" href="/">Back to website</a>{% else %}<button class="modal-close" type="button" data-close-admin aria-label="Close admin panel">×</button>{% endif %}</div>
+      <p class="admin-description" data-en="Manage destinations, stays, places to eat and local guides." data-hi="गंतव्य, ठहरने की जगहें, रेस्टोरेंट और स्थानीय गाइड प्रबंधित करें।">Manage destinations, stays, places to eat and local guides.</p>
       <form class="admin-auth-form" id="admin-login-form">
         <h3 data-en="Admin sign in" data-hi="एडमिन साइन इन">Admin sign in</h3>
         <div class="form-field"><label for="admin-username" data-en="Username" data-hi="यूज़रनेम">Username</label><input id="admin-username" name="username" autocomplete="username" required maxlength="80"></div>
@@ -207,21 +207,200 @@
       </form>
       <div id="admin-account-area" hidden>
         <div class="admin-account"><span id="admin-account-name"></span><button class="admin-logout" type="button" id="admin-logout" data-en="Sign out" data-hi="साइन आउट">Sign out</button></div>
-        <button class="admin-add" id="admin-add-place" type="button" data-en="＋　Add a destination" data-hi="＋　नया गंतव्य जोड़ें">＋　Add a destination</button>
-        <form class="admin-form" id="admin-place-form" hidden>
-          <div class="form-field full"><label for="place-name" data-en="Name" data-hi="नाम">Name</label><input id="place-name" name="name" required minlength="2" maxlength="160"></div>
-          <div class="form-field"><label for="place-region" data-en="Region" data-hi="क्षेत्र">Region</label><select id="place-region" name="region">{% for region in regions %}<option>{{ region }}</option>{% endfor %}</select></div>
-          <div class="form-field"><label for="place-category" data-en="Category" data-hi="श्रेणी">Category</label><input id="place-category" name="category" required maxlength="100"></div>
-          <div class="form-field full"><label for="place-image" data-en="Image URL" data-hi="चित्र URL">Image URL</label><input id="place-image" name="image" type="url" required maxlength="1000"></div>
-          <div class="form-field full"><label for="place-description" data-en="Description" data-hi="विवरण">Description</label><textarea id="place-description" name="description" required minlength="10"></textarea></div>
-          <button class="button" type="submit" data-en="Save destination" data-hi="गंतव्य सहेजें">Save destination</button>
-          <button class="button button-outline admin-cancel" id="admin-cancel-edit" type="button" data-en="Cancel" data-hi="रद्द करें">Cancel</button>
-        </form>
-        <div id="admin-place-list"></div>
+        <nav class="admin-tabs" aria-label="Admin sections">
+          <button class="admin-tab active" type="button" data-admin-tab="search">Search &amp; Filter</button>
+          <button class="admin-tab" type="button" data-admin-tab="places">Manage Places</button>
+          <button class="admin-tab" type="button" data-admin-tab="hotels">Manage Hotels</button>
+          <button class="admin-tab" type="button" data-admin-tab="restaurants">Manage Restaurants</button>
+          <button class="admin-tab" type="button" data-admin-tab="guides">Manage Guides</button>
+        </nav>
+        <section class="admin-section" data-admin-section="search">
+          <section class="admin-overall-search" aria-labelledby="overall-location-search-title">
+            <h3 id="overall-location-search-title">Search all listings by location</h3>
+            <label class="listing-search">
+              <span class="visually-hidden">Search hotels, restaurants, and guides by state, city, or PIN code</span>
+              <input type="search" data-overall-location-search placeholder="Enter a state, city, or PIN code">
+            </label>
+            <div data-overall-search-controls hidden>
+              <fieldset class="overall-search-types">
+                <legend>Search in</legend>
+                <label><input type="checkbox" data-overall-search-type="hotels" checked> Hotels</label>
+                <label><input type="checkbox" data-overall-search-type="restaurants" checked> Restaurants</label>
+                <label><input type="checkbox" data-overall-search-type="guides" checked> Guides</label>
+              </fieldset>
+              <div class="overall-global-filters" aria-label="Listing filters">
+                <fieldset class="overall-global-filter" data-overall-filter-group="hotels">
+                  <legend>Hotel filters</legend>
+                  <label>Rating
+                    <select data-overall-filter="hotel-rating">
+                      <option value="">Any rating</option>
+                      {% for rating in "1234567" %}<option value="{{ rating }}">{{ rating }} star{{ rating|pluralize }}</option>{% endfor %}
+                    </select>
+                  </label>
+                  <label>Hotel type
+                    <select data-overall-filter="hotel-ac">
+                      <option value="">AC or Non-AC</option>
+                      <option value="AC">AC</option>
+                      <option value="Non-AC">Non-AC</option>
+                    </select>
+                  </label>
+                  <label>Price range
+                    <input type="search" data-overall-filter="hotel-price-range" placeholder="e.g. 3000-4000">
+                  </label>
+                  <label>Minimum price (₹)
+                    <input type="number" min="0" data-overall-filter="hotel-min-price" placeholder="No minimum">
+                  </label>
+                  <label>Maximum price (₹)
+                    <input type="number" min="0" data-overall-filter="hotel-max-price" placeholder="No maximum">
+                  </label>
+                </fieldset>
+                <fieldset class="overall-global-filter" data-overall-filter-group="restaurants">
+                  <legend>Restaurant filters</legend>
+                  <label>Food type
+                    <select data-overall-filter="restaurant-food">
+                      <option value="">Veg or Non-veg</option>
+                      <option value="Veg">Veg</option>
+                      <option value="Non-veg">Non-veg</option>
+                    </select>
+                  </label>
+                  <label>Price range
+                    <select data-overall-filter="restaurant-price">
+                      <option value="">Any price range</option>
+                      <option value="Non-premium">Non-premium</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Premium">Premium</option>
+                    </select>
+                  </label>
+                </fieldset>
+                <fieldset class="overall-global-filter" data-overall-filter-group="guides">
+                  <legend>Guide filters</legend>
+                  <fieldset class="guide-search-language">
+                    <legend>Language</legend>
+                    <div class="guide-search-language-options" data-guide-search-languages>
+                      <span>Search for a location to see available guide languages.</span>
+                    </div>
+                  </fieldset>
+                  <label>Minimum price (₹)
+                    <input type="number" min="0" data-overall-filter="guide-min-price" placeholder="No minimum">
+                  </label>
+                  <label>Maximum price (₹)
+                    <input type="number" min="0" data-overall-filter="guide-max-price" placeholder="No maximum">
+                  </label>
+                </fieldset>
+              </div>
+              <div class="admin-overall-search-results" data-overall-location-results aria-live="polite">
+                Enter a location to find matching hotels, restaurants, and guides.
+              </div>
+            </div>
+          </section>
+        </section>
+        <section class="admin-section" data-admin-section="places" hidden>
+          <button class="admin-add" id="admin-add-place" type="button" data-en="＋　Add a destination" data-hi="＋　नया गंतव्य जोड़ें">＋　Add a destination</button>
+          <form class="admin-form" id="admin-place-form" hidden>
+            <p class="required-fields-note"><span aria-hidden="true">*</span> Required fields</p>
+            <div class="form-field full"><label for="place-name" data-en="Name" data-hi="नाम">Name</label><input id="place-name" name="name" required minlength="2" maxlength="160"></div>
+            <div class="form-field"><label for="place-region" data-en="Region" data-hi="क्षेत्र">Region</label><select id="place-region" name="region" required>{% for region in regions %}<option>{{ region }}</option>{% endfor %}</select></div>
+            <div class="form-field"><label for="place-category" data-en="Category" data-hi="श्रेणी">Category</label><input id="place-category" name="category" required minlength="2" maxlength="100"></div>
+            <div class="form-field full"><label for="place-image" data-en="Image URL" data-hi="चित्र URL">Image URL</label><input id="place-image" name="image" type="url" required maxlength="1000"></div>
+            <div class="form-field full"><label for="place-description" data-en="Description" data-hi="विवरण">Description</label><textarea id="place-description" name="description" required minlength="10"></textarea></div>
+            <button class="button" type="submit" data-en="Save destination" data-hi="गंतव्य सहेजें">Save destination</button>
+            <button class="button button-outline admin-cancel" id="admin-cancel-edit" type="button" data-en="Cancel" data-hi="रद्द करें">Cancel</button>
+          </form>
+          <div id="admin-place-list"></div>
+        </section>
+        <section class="admin-section" data-admin-section="hotels" hidden>
+          <button class="admin-add" type="button" data-add-listing="hotels">＋　Add a hotel</button>
+          <form class="admin-form listing-form" data-listing-form="hotels" hidden>
+            <p class="required-fields-note"><span aria-hidden="true">*</span> Required fields</p>
+            <div class="form-field full"><label for="hotel-name">Hotel name</label><input id="hotel-name" name="name" required maxlength="160"></div>
+            <div class="full">
+              <div id="hotel-location-fields">
+                <fieldset class="hotel-location-card" data-hotel-location>
+                  <legend>Branch location 1</legend>
+                  <button class="hotel-location-remove" type="button" data-remove-hotel-location hidden>Remove branch</button>
+                  <div class="hotel-location-grid" data-location-fields>
+                    <label><span>State</span><select data-location-state required><option value="" selected disabled>Select a state</option></select></label>
+                    <label><span>City</span><select data-location-city required disabled><option value="" selected disabled>Select a city</option></select><input data-location-city-other placeholder="Enter city" maxlength="100" required hidden disabled></label>
+                    <label class="location-wide"><span>PIN code</span><select data-location-pincode required disabled><option value="" selected disabled>Select a city first</option></select><input data-location-pincode-other type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit PIN code" required hidden disabled></label>
+                    <label class="location-wide"><span>Contact info</span><input data-location-contact required maxlength="160"></label>
+                    <label class="location-wide"><span>Address</span><textarea data-location-address required></textarea></label>
+                  </div>
+                </fieldset>
+              </div>
+              <button class="admin-add hotel-location-add" type="button" id="add-hotel-location">＋　Add another branch</button>
+            </div>
+            <div class="form-field"><label for="hotel-ac">Air conditioning</label><select id="hotel-ac" name="air_conditioning" required><option value="AC">AC</option><option value="Non-AC">Non-AC</option></select></div>
+            <div class="form-field"><label for="hotel-stars">Star rating</label><select id="hotel-stars" name="star_rating" required><option value="" selected disabled>Select a rating</option>{% for rating in "1234567" %}<option value="{{ rating }}">{{ rating }} star{{ rating|pluralize }}</option>{% endfor %}</select></div>
+            <div class="form-field full"><label for="hotel-price">Price range</label><input id="hotel-price" name="price_range" required maxlength="100" placeholder="e.g. ₹2,000–₹4,000 per night"></div>
+            <div class="form-field full"><label for="hotel-website">Website (optional)</label><input id="hotel-website" name="website" type="url" maxlength="500" placeholder="https://example.com"></div>
+            <button class="button" type="submit">Save hotel</button>
+            <button class="button button-outline listing-cancel" type="button">Cancel</button>
+          </form>
+          <template id="hotel-location-template">
+            <fieldset class="hotel-location-card" data-hotel-location>
+              <legend></legend>
+              <button class="hotel-location-remove" type="button" data-remove-hotel-location>Remove branch</button>
+              <div class="hotel-location-grid" data-location-fields>
+                <label><span>State</span><select data-location-state required><option value="" selected disabled>Select a state</option></select></label>
+                <label><span>City</span><select data-location-city required disabled><option value="" selected disabled>Select a city</option></select><input data-location-city-other placeholder="Enter city" maxlength="100" required hidden disabled></label>
+                <label class="location-wide"><span>PIN code</span><select data-location-pincode required disabled><option value="" selected disabled>Select a city first</option></select><input data-location-pincode-other type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit PIN code" required hidden disabled></label>
+                <label class="location-wide"><span>Contact info</span><input data-location-contact required maxlength="160"></label>
+                <label class="location-wide"><span>Address</span><textarea data-location-address required></textarea></label>
+              </div>
+            </fieldset>
+          </template>
+          <label class="listing-search"><span class="visually-hidden">Search hotels</span><input type="search" data-listing-search="hotels" placeholder="Search hotels by name, location, PIN, or details"></label>
+          <div class="admin-listing-list" data-listing-list="hotels"></div>
+        </section>
+        <section class="admin-section" data-admin-section="restaurants" hidden>
+          <button class="admin-add" type="button" data-add-listing="restaurants">＋　Add a restaurant</button>
+          <form class="admin-form listing-form" data-listing-form="restaurants" hidden>
+            <p class="required-fields-note"><span aria-hidden="true">*</span> Required fields</p>
+            <div class="form-field full"><label for="restaurant-name">Restaurant name</label><input id="restaurant-name" name="name" required maxlength="160"></div>
+            <div class="form-field"><label for="restaurant-state">State</label><select id="restaurant-state" name="state" data-location-state required><option value="" selected disabled>Select a state</option></select></div>
+            <div class="form-field"><label for="restaurant-city">City</label><select id="restaurant-city" name="city" data-location-city required disabled><option value="" selected disabled>Select a city</option></select><input name="city_other" data-location-city-other placeholder="Enter city" maxlength="100" required hidden disabled></div>
+            <div class="form-field full"><label for="restaurant-pincode">PIN code</label><select id="restaurant-pincode" name="postal_code" data-location-pincode required disabled><option value="" selected disabled>Select a city first</option></select><input name="postal_code_other" data-location-pincode-other type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit PIN code" required hidden disabled></div>
+            <div class="form-field full"><label for="restaurant-contact">Contact info</label><input id="restaurant-contact" name="contact_info" required maxlength="160"></div>
+            <div class="form-field full"><label for="restaurant-address">Address</label><textarea id="restaurant-address" name="address" required></textarea></div>
+            <div class="form-field"><label for="restaurant-food-type">Food type</label><select id="restaurant-food-type" name="food_type" required><option value="Veg">Veg</option><option value="Non-veg">Non-veg</option></select></div>
+            <div class="form-field"><label for="restaurant-price">Price range</label><select id="restaurant-price" name="price_range" required><option value="Non-premium">Non-premium</option><option value="Medium">Medium</option><option value="Premium">Premium</option></select></div>
+            <button class="button" type="submit">Save restaurant</button>
+            <button class="button button-outline listing-cancel" type="button">Cancel</button>
+          </form>
+          <label class="listing-search"><span class="visually-hidden">Search restaurants</span><input type="search" data-listing-search="restaurants" placeholder="Search restaurants by name, location, PIN, or details"></label>
+          <div class="admin-listing-list" data-listing-list="restaurants"></div>
+        </section>
+        <section class="admin-section" data-admin-section="guides" hidden>
+          <button class="admin-add" type="button" data-add-listing="guides">＋　Add a guide</button>
+          <form class="admin-form listing-form" data-listing-form="guides" hidden>
+            <p class="required-fields-note"><span aria-hidden="true">*</span> Required fields</p>
+            <div class="form-field full"><label for="guide-name">Guide name</label><input id="guide-name" name="name" required maxlength="160"></div>
+            <div class="form-field full"><label for="guide-contact">Contact info</label><input id="guide-contact" name="contact_info" required maxlength="160"></div>
+            <div class="form-field"><label for="guide-state">State</label><select id="guide-state" name="state" data-location-state required><option value="" selected disabled>Select a state</option></select></div>
+            <div class="form-field"><label for="guide-city">City</label><select id="guide-city" name="city" data-location-city required disabled><option value="" selected disabled>Select a city</option></select><input name="city_other" data-location-city-other placeholder="Enter city" maxlength="100" required hidden disabled></div>
+            <div class="form-field full"><label for="guide-pincode">PIN code</label><select id="guide-pincode" name="postal_code" data-location-pincode required disabled><option value="" selected disabled>Select a city first</option></select><input name="postal_code_other" data-location-pincode-other type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit PIN code" required hidden disabled></div>
+            <fieldset class="form-field full guide-language-fieldset">
+              <legend>Languages known</legend>
+              <div class="guide-language-options">
+                {% for guide_language in guide_languages %}
+                <label><input type="checkbox" name="guide_language" value="{{ guide_language }}" data-guide-language> {{ guide_language }}</label>
+                {% endfor %}
+                <label><input type="checkbox" name="guide_language_other" value="other" data-guide-language-other> Other language</label>
+              </div>
+              <input name="guide_language_other_text" data-guide-language-other-text placeholder="Enter other language(s)" maxlength="100" hidden disabled>
+            </fieldset>
+            <div class="form-field full"><label for="guide-price">Price (₹)</label><input id="guide-price" name="price" type="number" min="0" step="0.01" required></div>
+            <button class="button" type="submit">Save guide</button>
+            <button class="button button-outline listing-cancel" type="button">Cancel</button>
+          </form>
+          <label class="listing-search"><span class="visually-hidden">Search guides</span><input type="search" data-listing-search="guides" placeholder="Search guides by name, location, PIN, language, or contact"></label>
+          <div class="admin-listing-list" data-listing-list="guides"></div>
+        </section>
       </div>
     </aside>
     <div class="toast" id="toast" role="status" hidden></div>
 
+    {{ state_cities|json_script:"state-city-data" }}
     <script id="hero-data" type="application/json">
       [
         {"region":"Bodh Gaya","title":"Where the world finds","emphasis":"stillness.","titleHi":"जहाँ दुनिया पाती है","emphasisHi":"शांति।","image":"https://thumb.wikimedia.org/wikipedia/commons/thumb/4/4e/Mahabodhitemple.jpg/1280px-Mahabodhitemple.jpg","credit":"https://commons.wikimedia.org/wiki/File:Mahabodhitemple.jpg","copy":"Stand beneath the Bodhi Tree. Follow a thousand years of devotion. Find a quieter rhythm in the place that changed the world.","copyHi":"बोधि वृक्ष के नीचे ठहरें। सदियों की आस्था को महसूस करें और उस पावन भूमि में मन की शांति पाएं जहाँ बुद्ध को ज्ञान प्राप्त हुआ।"},

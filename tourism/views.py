@@ -3,18 +3,38 @@ import json
 import secrets
 import smtplib
 from datetime import timedelta
+from json import JSONDecodeError
+from urllib.error import URLError
+from urllib.parse import quote
+from urllib.request import urlopen
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
+from django.core.serializers.json import DjangoJSONEncoder
 from django.core.validators import validate_email
+from django.db import IntegrityError, transaction
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import AdminAccount, AdminSession, Booking, Inquiry, Place
+from .locations import STATE_CITIES
+from .models import (
+    AdminAccount,
+    AdminSession,
+    Booking,
+    CityPincode,
+    Guide,
+    GuideLanguage,
+    Hotel,
+    HotelLocation,
+    Inquiry,
+    Place,
+    Restaurant,
+)
 
 ADMIN_SESSION_COOKIE = "beyond_admin_session"
 ADMIN_SESSION_DURATION = timedelta(hours=12)
@@ -24,6 +44,26 @@ PLACE_FIELDS = {
     "image": (5, 1000),
     "region": (2, 100),
     "category": (2, 100),
+}
+ADMIN_LISTING_MODELS = {
+    "hotels": Hotel,
+    "restaurants": Restaurant,
+    "guides": Guide,
+}
+POSTAL_CITY_QUERY_ALIASES = {
+    "Bodh Gaya": "Bodhgaya",
+    "Cherrapunji": "Sohra",
+    "Chhatrapati Sambhajinagar": "Aurangabad",
+    "Ooty": "Udagamandalam",
+    "Sri Vijaya Puram": "Port Blair",
+}
+POSTAL_DISTRICT_ALIASES = {
+    "Bodh Gaya": "Gaya",
+    "Cherrapunji": "East Khasi Hills",
+    "Chhatrapati Sambhajinagar": "Aurangabad",
+    "Ooty": "Nilgiris",
+    "Rajgir": "Nalanda",
+    "Sri Vijaya Puram": "South Andaman",
 }
 
 
@@ -164,7 +204,7 @@ def send_email_alert(subject: str, message: str) -> bool:
         return False
 
 
-def home(request: HttpRequest) -> HttpResponse:
+def home(request: HttpRequest, admin_page: bool = False) -> HttpResponse:
     photo_credits = {
         "Mahabodhi Temple": "https://commons.wikimedia.org/wiki/File:Mahabodhitemple.jpg",
         "The Great Buddha Statue": "https://commons.wikimedia.org/wiki/File:Great_Buddha_Statue,_Bodh_Gaya_at_Sunset.jpg",
@@ -193,16 +233,139 @@ def home(request: HttpRequest) -> HttpResponse:
         }
         for place in Place.objects.all()
     ]
+    state_cities = {state: set(cities) for state, cities in STATE_CITIES.items()}
+    for location in CityPincode.objects.values("state", "city").distinct():
+        state_cities.setdefault(location["state"], set()).add(location["city"])
+    guide_languages = GuideLanguage.objects.values_list("name", flat=True)
+
     return render(
         request,
         "tourism/home.html",
-        {"places": places, "regions": ("Bodh Gaya", "Gaya", "Nalanda", "Rajgir")},
+        {
+            "places": places,
+            "regions": ("Bodh Gaya", "Gaya", "Nalanda", "Rajgir"),
+            "state_cities": {
+                state: sorted(cities, key=str.casefold)
+                for state, cities in state_cities.items()
+            },
+            "guide_languages": guide_languages,
+            "admin_page": admin_page,
+        },
     )
+
+
+def admin_page(request: HttpRequest) -> HttpResponse:
+    return home(request, admin_page=True)
+
+
+def get_or_create_guide_language(name: str) -> GuideLanguage:
+    language = GuideLanguage.objects.filter(name__iexact=name).first()
+    if language:
+        return language
+    try:
+        with transaction.atomic():
+            return GuideLanguage.objects.create(name=name)
+    except IntegrityError:
+        return GuideLanguage.objects.get(name__iexact=name)
 
 
 @require_http_methods(["GET"])
 def health(_request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "ok", "service": "Bihar Beyond"})
+
+
+def normalize_location(value: str) -> str:
+    return "".join(character for character in value.casefold() if character.isalnum())
+
+
+def fetch_location_pincodes(state: str, city: str) -> list[str]:
+    cache_key = f"tourism:location-pincodes:{quote(state, safe='')}:{quote(city, safe='')}"
+    saved_pincodes = list(
+        CityPincode.objects.filter(state__iexact=state, city__iexact=city)
+        .values_list("postal_code", flat=True)
+    )
+    cached_pincodes = cache.get(cache_key)
+    if cached_pincodes is not None:
+        return sorted(set(cached_pincodes) | set(saved_pincodes))
+
+    if city not in STATE_CITIES.get(state, ()) and saved_pincodes:
+        return sorted(set(saved_pincodes))
+
+    postal_city = POSTAL_CITY_QUERY_ALIASES.get(city, city)
+    query = quote(postal_city, safe="")
+    try:
+        with urlopen(f"https://api.postalpincode.in/postoffice/{query}", timeout=10) as response:
+            postal_data = json.loads(response.read())
+    except (OSError, URLError, JSONDecodeError, UnicodeDecodeError):
+        if saved_pincodes:
+            return sorted(set(saved_pincodes))
+        raise
+
+    if (
+        not isinstance(postal_data, list)
+        or not postal_data
+        or not isinstance(postal_data[0], dict)
+        or postal_data[0].get("Status") != "Success"
+        or not isinstance(postal_data[0].get("PostOffice"), list)
+    ):
+        return sorted(set(saved_pincodes))
+
+    normalized_city = normalize_location(city)
+    normalized_postal_city = normalize_location(postal_city)
+    normalized_district = normalize_location(POSTAL_DISTRICT_ALIASES.get(city, city))
+
+    def matches_location(office: dict) -> bool:
+        office_state = office.get("State")
+        office_name = office.get("Name")
+        office_district = office.get("District")
+        pincode = office.get("Pincode")
+        return (
+            isinstance(office_state, str)
+            and normalize_location(office_state) == normalize_location(state)
+            and (
+                isinstance(office_district, str)
+                and normalize_location(office_district) == normalized_district
+                or isinstance(office_name, str)
+                and normalize_location(office_name) in {normalized_city, normalized_postal_city}
+            )
+            and isinstance(pincode, str)
+            and len(pincode) == 6
+            and pincode.isdigit()
+        )
+
+    pincodes = sorted(
+        {
+            office["Pincode"]
+            for office in postal_data[0]["PostOffice"]
+            if isinstance(office, dict)
+            and matches_location(office)
+        }
+    )
+    cache.set(cache_key, pincodes, timeout=86400)
+    return sorted(set(pincodes) | set(saved_pincodes))
+
+
+@require_http_methods(["GET"])
+def location_pincodes(request: HttpRequest) -> JsonResponse:
+    if current_admin(request) is None:
+        return unauthorized()
+    state = request.GET.get("state", "")
+    city = request.GET.get("city", "")
+    if state not in STATE_CITIES:
+        return JsonResponse({"detail": "Select a valid state and city."}, status=422)
+    if (
+        city not in STATE_CITIES[state]
+        and not CityPincode.objects.filter(state__iexact=state, city__iexact=city).exists()
+    ):
+        return JsonResponse({"detail": "Select a valid state and city."}, status=422)
+
+    try:
+        pincodes = fetch_location_pincodes(state, city)
+    except (OSError, URLError, JSONDecodeError, UnicodeDecodeError) as exc:
+        return JsonResponse({"detail": f"PIN-code directory is unavailable: {exc}"}, status=502)
+    if not pincodes:
+        return JsonResponse({"detail": "No PIN codes were found for that city."}, status=404)
+    return JsonResponse(pincodes, safe=False)
 
 
 @csrf_exempt
@@ -278,6 +441,10 @@ def places(request: HttpRequest) -> JsonResponse:
     data, error = json_body(request)
     if error:
         return error
+    data = {
+        key: value.strip() if isinstance(value, str) else value
+        for key, value in data.items()
+    }
     errors = validate_fields(data, PLACE_FIELDS)
     if errors:
         return JsonResponse({"detail": errors}, status=422)
@@ -302,6 +469,10 @@ def place_detail(request: HttpRequest, place_id: int) -> JsonResponse | HttpResp
     data, error = json_body(request)
     if error:
         return error
+    data = {
+        key: value.strip() if isinstance(value, str) else value
+        for key, value in data.items()
+    }
     errors = validate_fields(data, PLACE_FIELDS, partial=True)
     if errors:
         return JsonResponse({"detail": errors}, status=422)
@@ -409,3 +580,234 @@ def admin_bookings(request: HttpRequest) -> JsonResponse:
         ],
         safe=False,
     )
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def admin_listings(request: HttpRequest, listing_type: str) -> JsonResponse:
+    model = ADMIN_LISTING_MODELS.get(listing_type)
+    if model is None:
+        return JsonResponse({"detail": "Listing type must be hotels, restaurants or guides"}, status=404)
+    if current_admin(request) is None:
+        return unauthorized()
+    if request.method == "GET":
+        if listing_type == "hotels":
+            return JsonResponse(
+                [
+                    {
+                        "id": item.id,
+                        "name": item.name,
+                        "website": item.website,
+                        "air_conditioning": item.air_conditioning,
+                        "price_range": item.price_range,
+                        "star_rating": item.star_rating,
+                        "locations": [
+                            {
+                                "state": location.state,
+                                "city": location.city,
+                                "postal_code": location.postal_code,
+                                "contact_info": location.contact_info,
+                                "address": location.address,
+                            }
+                            for location in item.locations.all()
+                        ],
+                    }
+                    for item in Hotel.objects.prefetch_related("locations")
+                ],
+                safe=False,
+            )
+
+    if listing_type == "hotels" and request.method == "POST":
+        data, error = json_body(request)
+        if error:
+            return error
+        locations = data.pop("locations", None)
+        required_fields = {"name", "air_conditioning", "price_range", "star_rating"}
+        if (
+            not required_fields.issubset(data)
+            or set(data) - required_fields - {"website"}
+            or not isinstance(locations, list)
+            or not locations
+        ):
+            return JsonResponse({"detail": "Provide hotel details and at least one branch location."}, status=422)
+        hotel = Hotel(**data)
+        try:
+            hotel.full_clean()
+        except ValidationError as exc:
+            return JsonResponse({"detail": exc.message_dict}, status=422)
+
+        location_fields = {"state", "city", "postal_code", "contact_info", "address"}
+        validated_locations = []
+        custom_locations = []
+        for location_data in locations:
+            if not isinstance(location_data, dict):
+                return JsonResponse({"detail": "Each hotel location must be an object."}, status=422)
+            postal_code_is_other = location_data.pop("postal_code_is_other", False)
+            city_is_other = location_data.pop("city_is_other", False)
+            if not isinstance(postal_code_is_other, bool) or not isinstance(city_is_other, bool):
+                return JsonResponse({"detail": "Location option flags must be true or false."}, status=422)
+            if set(location_data) != location_fields:
+                return JsonResponse({"detail": "Each branch must include state, city, PIN, contact and address."}, status=422)
+            state = location_data.get("state")
+            city = location_data.get("city")
+            if not isinstance(state, str) or state not in STATE_CITIES:
+                return JsonResponse({"detail": {"state": "Select a valid state."}}, status=422)
+            if not isinstance(city_is_other, bool):
+                return JsonResponse({"detail": {"city": "Select a listed city or choose Other."}}, status=422)
+            if not isinstance(city, str) or not city.strip() or len(city.strip()) > 100:
+                return JsonResponse({"detail": {"city": "Enter a valid city."}}, status=422)
+            location_data["city"] = city.strip()
+            location = HotelLocation(**location_data)
+            try:
+                location.full_clean(exclude=("hotel",))
+            except ValidationError as exc:
+                return JsonResponse({"detail": exc.message_dict}, status=422)
+            known_city = city in STATE_CITIES[state] or CityPincode.objects.filter(
+                state__iexact=state, city__iexact=location.city
+            ).exists()
+            if not known_city and not city_is_other:
+                return JsonResponse({"detail": {"city": "Select a listed city or choose Other."}}, status=422)
+            if known_city and not postal_code_is_other:
+                try:
+                    pincodes = fetch_location_pincodes(state, location.city)
+                except (OSError, URLError, JSONDecodeError, UnicodeDecodeError) as exc:
+                    return JsonResponse({"detail": f"PIN-code directory is unavailable: {exc}"}, status=502)
+                if location.postal_code not in pincodes:
+                    return JsonResponse(
+                        {"detail": {"postal_code": "Select a PIN code listed for the selected state and city."}},
+                        status=422,
+                    )
+            validated_locations.append(location)
+            if city_is_other or postal_code_is_other:
+                custom_locations.append((state, location.city, location.postal_code))
+
+        with transaction.atomic():
+            hotel.save()
+            for location in validated_locations:
+                location.hotel = hotel
+                location.save()
+            for state, city, postal_code in custom_locations:
+                CityPincode.objects.get_or_create(state=state, city=city, postal_code=postal_code)
+        return JsonResponse(
+            {
+                "id": hotel.id,
+                "name": hotel.name,
+                "website": hotel.website,
+                "air_conditioning": hotel.air_conditioning,
+                "price_range": hotel.price_range,
+                "star_rating": hotel.star_rating,
+                "locations": [
+                    {
+                        "state": location.state,
+                        "city": location.city,
+                        "postal_code": location.postal_code,
+                        "contact_info": location.contact_info,
+                        "address": location.address,
+                    }
+                    for location in hotel.locations.all()
+                ],
+            },
+            status=201,
+        )
+
+    if request.method == "GET":
+        fields = [field.name for field in model._meta.concrete_fields]
+        return JsonResponse(
+            [{field: getattr(item, field) for field in fields} for item in model.objects.all()],
+            safe=False,
+        )
+
+    data, error = json_body(request)
+    if error:
+        return error
+    postal_code_is_other = data.pop("postal_code_is_other", False)
+    city_is_other = data.pop("city_is_other", False)
+    if not isinstance(postal_code_is_other, bool) or not isinstance(city_is_other, bool):
+        return JsonResponse({"detail": "Location option flags must be true or false."}, status=422)
+    fields = {
+        field.name
+        for field in model._meta.concrete_fields
+        if field.name not in {"id", "created_at"}
+    }
+    if set(data) != fields:
+        return JsonResponse({"detail": "Please provide all required listing fields."}, status=422)
+    guide_languages = []
+    if listing_type == "guides":
+        submitted_languages = data.get("languages")
+        if not isinstance(submitted_languages, str):
+            return JsonResponse({"detail": {"languages": "Select at least one language."}}, status=422)
+        seen_languages = set()
+        for language_name in submitted_languages.split(","):
+            language_name = language_name.strip()
+            normalized_name = language_name.casefold()
+            if language_name and normalized_name not in seen_languages:
+                if len(language_name) > 100:
+                    return JsonResponse(
+                        {"detail": {"languages": "Each language must be 100 characters or fewer."}},
+                        status=422,
+                    )
+                seen_languages.add(normalized_name)
+                guide_languages.append(language_name)
+        if not guide_languages:
+            return JsonResponse({"detail": {"languages": "Select at least one language."}}, status=422)
+        data["languages"] = ", ".join(guide_languages)
+    if "state" in fields:
+        state = data["state"]
+        city = data["city"]
+        if not isinstance(state, str) or state not in STATE_CITIES:
+            return JsonResponse({"detail": {"state": "Select a valid state."}}, status=422)
+        if not isinstance(city, str) or not city.strip() or len(city.strip()) > 100:
+            return JsonResponse({"detail": {"city": "Enter a valid city."}}, status=422)
+        city = city.strip()
+        data["city"] = city
+    item = model(**data)
+    try:
+        item.full_clean()
+    except ValidationError as exc:
+        return JsonResponse({"detail": exc.message_dict}, status=422)
+    if "state" in fields:
+        if len(item.postal_code) != 6 or not item.postal_code.isdigit():
+            return JsonResponse({"detail": {"postal_code": "Enter a valid 6-digit PIN code."}}, status=422)
+        known_city = city in STATE_CITIES[state] or CityPincode.objects.filter(
+            state__iexact=state, city__iexact=city
+        ).exists()
+        if known_city and not postal_code_is_other:
+            try:
+                pincodes = fetch_location_pincodes(state, city)
+            except (OSError, URLError, JSONDecodeError, UnicodeDecodeError) as exc:
+                return JsonResponse({"detail": f"PIN-code directory is unavailable: {exc}"}, status=502)
+            if item.postal_code not in pincodes:
+                return JsonResponse(
+                    {"detail": {"postal_code": "Select a PIN code listed for the selected state and city."}},
+                    status=422,
+                )
+    with transaction.atomic():
+        for language_name in guide_languages:
+            get_or_create_guide_language(language_name)
+        item.save()
+        if city_is_other or postal_code_is_other:
+            CityPincode.objects.get_or_create(
+                state=item.state,
+                city=item.city,
+                postal_code=item.postal_code,
+            )
+    return JsonResponse(
+        {field: getattr(item, field) for field in ("id", *fields, "created_at")},
+        status=201,
+        encoder=DjangoJSONEncoder,
+    )
+
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def admin_listing_detail(request: HttpRequest, listing_type: str, listing_id: int) -> HttpResponse:
+    model = ADMIN_LISTING_MODELS.get(listing_type)
+    if model is None:
+        return JsonResponse({"detail": "Listing type must be hotels, restaurants or guides"}, status=404)
+    if current_admin(request) is None:
+        return unauthorized()
+    item = model.objects.filter(pk=listing_id).first()
+    if item is None:
+        return JsonResponse({"detail": "Listing not found"}, status=404)
+    item.delete()
+    return HttpResponse(status=204)

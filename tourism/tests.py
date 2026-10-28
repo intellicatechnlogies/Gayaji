@@ -6,7 +6,7 @@ from django.contrib.staticfiles import finders
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from .models import AdminAccount, Booking, Place
+from .models import AdminAccount, Booking, CityPincode, Guide, GuideLanguage, Hotel, HotelLocation, Place, Restaurant
 from .views import hash_password, verify_password
 
 
@@ -58,10 +58,56 @@ class TourismApiTests(TestCase):
         self.assertContains(response, "Template destination")
         self.assertContains(response, 'id="admin-panel"')
         self.assertContains(response, 'id="booking-backdrop"')
+        self.assertContains(response, 'data-admin-tab="search">Search &amp; Filter</button>')
+        self.assertContains(response, 'data-admin-tab="places">Manage Places</button>')
+        self.assertContains(response, 'data-admin-tab="hotels">Manage Hotels</button>')
+        self.assertContains(response, 'data-admin-tab="restaurants">Manage Restaurants</button>')
+        self.assertContains(response, 'data-admin-tab="guides">Manage Guides</button>')
+        self.assertContains(response, 'data-admin-section="search"')
+        self.assertContains(response, 'id="place-region" name="region" required')
+        self.assertContains(response, 'id="place-category" name="category" required')
+        self.assertContains(response, 'id="place-image" name="image" type="url" required')
+        self.assertContains(response, 'id="place-description" name="description" required')
+        self.assertEqual(response.content.count(b'class="required-fields-note"'), 4)
+        self.assertContains(response, 'data-listing-form="hotels"')
+        self.assertContains(response, 'id="hotel-website" name="website" type="url"')
+        self.assertNotContains(response, 'id="hotel-website" name="website" type="url" maxlength="500" required')
+        self.assertContains(response, '<select id="hotel-stars" name="star_rating" required>')
+        self.assertContains(response, 'value="7">7 stars</option>')
+        self.assertContains(response, 'data-listing-form="restaurants"')
+        self.assertContains(response, 'data-listing-form="guides"')
+        self.assertContains(response, 'data-listing-search="hotels"')
+        self.assertContains(response, 'data-overall-search-controls hidden')
+        self.assertContains(response, 'data-listing-search="restaurants"')
+        self.assertContains(response, 'data-listing-search="guides"')
+        self.assertContains(response, 'data-overall-location-search')
+        self.assertContains(response, 'data-overall-search-type="hotels" checked')
+        self.assertContains(response, 'data-overall-search-type="restaurants" checked')
+        self.assertContains(response, 'data-overall-search-type="guides" checked')
+        self.assertContains(response, 'data-overall-filter="hotel-rating"')
+        self.assertContains(response, 'data-overall-filter="hotel-ac"')
+        self.assertContains(response, 'data-overall-filter="hotel-price-range"')
+        self.assertContains(response, 'data-overall-filter="restaurant-food"')
+        self.assertContains(response, 'data-overall-filter="restaurant-price"')
+        self.assertContains(response, 'data-guide-search-languages')
+        self.assertContains(response, 'data-overall-filter="guide-min-price"')
+        self.assertContains(response, 'data-overall-filter="guide-max-price"')
+        self.assertContains(response, 'data-overall-location-results')
+        self.assertContains(response, 'value="Hindi" data-guide-language')
+        self.assertContains(response, 'value="English" data-guide-language')
+        self.assertContains(response, 'value="Pali" data-guide-language')
+        self.assertContains(response, 'value="Tibetan" data-guide-language')
+        self.assertContains(response, 'data-guide-language-other')
 
     def test_static_assets_are_discoverable_for_collectstatic(self):
         self.assertIsNotNone(finders.find("styles.css"))
         self.assertIsNotNone(finders.find("site.js"))
+
+    def test_admin_page_renders_full_page_admin_view(self):
+        response = self.client.get("/admin/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '<body class="admin-page" data-admin-page="true">')
+        self.assertContains(response, 'class="admin-back-link" href="/">Back to website</a>')
 
     def test_admin_login_protects_destination_crud_and_logout_revokes_session(self):
         payload = {
@@ -99,6 +145,30 @@ class TourismApiTests(TestCase):
         self.assertEqual(self.client.get("/api/admin/session").status_code, 401)
         self.assertEqual(self.client.post("/api/places", data=json.dumps(payload), content_type="application/json").status_code, 401)
 
+    def test_place_fields_are_required_and_whitespace_is_rejected(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        valid_payload = {
+            "name": "Valid place",
+            "description": "A valid destination description.",
+            "image": "https://example.com/place.jpg",
+            "region": "Gaya",
+            "category": "Heritage",
+        }
+        for field in valid_payload:
+            with self.subTest(field=field):
+                payload = {**valid_payload, field: "   "}
+                response = self.client.post(
+                    "/api/places",
+                    data=json.dumps(payload),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 422)
+        self.assertFalse(Place.objects.exists())
+
     def test_invalid_admin_password_is_rejected(self):
         response = self.client.post(
             "/api/admin/login",
@@ -106,6 +176,412 @@ class TourismApiTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 401)
+
+    @patch("tourism.views.fetch_location_pincodes", return_value=["823001", "800001"])
+    def test_admin_can_create_list_and_remove_hotels_restaurants_and_guides(self, _mock_pincodes):
+        examples = (
+            (
+                "hotels",
+                Hotel,
+                {
+                    "name": "Bodh Gaya Inn",
+                    "air_conditioning": "AC",
+                    "price_range": "₹2,000–₹4,000 per night",
+                    "star_rating": 4,
+                    "locations": [
+                        {
+                            "state": "Bihar",
+                            "city": "Gaya",
+                            "postal_code": "823001",
+                            "contact_info": "+91 9876543210",
+                            "address": "Temple Road, Bodh Gaya",
+                        },
+                        {
+                            "state": "Bihar",
+                            "city": "Patna",
+                            "postal_code": "800001",
+                            "contact_info": "+91 9876543211",
+                            "address": "Fraser Road, Patna",
+                        },
+                    ],
+                },
+            ),
+            (
+                "restaurants",
+                Restaurant,
+                {
+                    "name": "Lotus Kitchen",
+                    "state": "Bihar",
+                    "city": "Gaya",
+                    "postal_code": "823001",
+                    "contact_info": "lotus@example.com",
+                    "address": "Main Road, Bodh Gaya",
+                    "food_type": "Veg",
+                    "price_range": "Medium",
+                },
+            ),
+            (
+                "guides",
+                Guide,
+                {
+                    "name": "A local guide",
+                    "contact_info": "+91 9876543210",
+                    "state": "Bihar",
+                    "city": "Gaya",
+                    "postal_code": "823001",
+                    "languages": "Hindi, English, Pali, Tibetan, Korean",
+                    "price": "1500.00",
+                },
+            ),
+        )
+        for listing_type, model, payload in examples:
+            with self.subTest(listing_type=listing_type):
+                endpoint = f"/api/admin/listings/{listing_type}"
+                self.assertEqual(self.client.get(endpoint).status_code, 401)
+                response = self.client.post(
+                    "/api/admin/login",
+                    data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 200)
+
+                created = self.client.post(endpoint, data=json.dumps(payload), content_type="application/json")
+                self.assertEqual(created.status_code, 201)
+                self.assertEqual(created.json()["name"], payload["name"])
+                if listing_type == "guides":
+                    self.assertEqual(created.json()["languages"], payload["languages"])
+                    self.assertEqual(GuideLanguage.objects.filter(name__iexact="Korean").count(), 1)
+                self.assertEqual(model.objects.count(), 1)
+                if listing_type == "hotels":
+                    self.assertEqual(len(created.json()["locations"]), 2)
+                    self.assertEqual(HotelLocation.objects.filter(hotel_id=created.json()["id"]).count(), 2)
+
+                listed = self.client.get(endpoint)
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(listed.json()[0]["name"], payload["name"])
+                if listing_type == "hotels":
+                    self.assertEqual(len(listed.json()[0]["locations"]), 2)
+                    self.assertEqual(
+                        {location["city"] for location in listed.json()[0]["locations"]},
+                        {"Gaya", "Patna"},
+                    )
+                deleted = self.client.delete(f"{endpoint}/{created.json()['id']}")
+                self.assertEqual(deleted.status_code, 204)
+                self.assertFalse(model.objects.exists())
+                self.client.post("/api/admin/logout")
+
+    @patch("tourism.views.fetch_location_pincodes", return_value=["823001"])
+    def test_hotel_website_is_optional_and_returned_by_api(self, _mock_pincodes):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        payload = {
+            "name": "Website Hotel",
+            "air_conditioning": "AC",
+            "price_range": "Medium",
+            "star_rating": 3,
+            "website": "https://example.com/hotel",
+            "locations": [
+                {
+                    "state": "Bihar",
+                    "city": "Gaya",
+                    "postal_code": "823001",
+                    "contact_info": "1234567890",
+                    "address": "Temple Road",
+                }
+            ],
+        }
+        created = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["website"], payload["website"])
+        listed = self.client.get("/api/admin/listings/hotels")
+        self.assertEqual(listed.json()[0]["website"], payload["website"])
+
+        payload.pop("website")
+        created_without_website = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        self.assertEqual(created_without_website.status_code, 201)
+        self.assertEqual(created_without_website.json()["website"], "")
+
+    def test_admin_listing_validation_rejects_invalid_categories_and_missing_fields(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        invalid_restaurant = {
+            "name": "Test Place",
+            "state": "Bihar",
+            "city": "Gaya",
+            "postal_code": "823001",
+            "contact_info": "1234567890",
+            "address": "Test address",
+            "food_type": "Both",
+            "price_range": "Medium",
+        }
+        response = self.client.post(
+            "/api/admin/listings/restaurants",
+            data=json.dumps(invalid_restaurant),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Restaurant.objects.exists())
+
+        response = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps({"name": "Incomplete"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Hotel.objects.exists())
+
+        invalid_hotel = {
+            "name": "Test Hotel",
+            "air_conditioning": "AC",
+            "price_range": "Medium",
+            "star_rating": 3,
+            "locations": [
+                {
+                    "state": "Bihar",
+                    "city": "Gaya",
+                    "postal_code": "823001",
+                    "contact_info": "1234567890",
+                    "address": "Test address",
+                }
+            ],
+        }
+        invalid_hotel["star_rating"] = 0
+        response = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps(invalid_hotel),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Hotel.objects.exists())
+
+        invalid_hotel["star_rating"] = 8
+        response = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps(invalid_hotel),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Hotel.objects.exists())
+
+    def test_listing_locations_are_selected_from_state_city_reference_data(self):
+        response = self.client.get("/")
+        self.assertContains(response, 'data-location-state')
+        self.assertContains(response, 'data-location-city')
+        self.assertContains(response, 'data-location-pincode')
+        self.assertContains(response, "Andaman and Nicobar Islands")
+
+    @patch("tourism.views.urlopen")
+    def test_pincode_lookup_returns_codes_for_the_selected_state_and_city(self, mocked_urlopen):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        response_body = json.dumps(
+            [
+                {
+                    "Status": "Success",
+                    "PostOffice": [
+                        {"State": "Bihar", "District": "Gaya", "Name": "Gaya H.O.", "Pincode": "823001"},
+                        {"State": "Bihar", "District": "Patna", "Name": "Gaya Road", "Pincode": "800001"},
+                        {"State": "Tamil Nadu", "District": "Gaya", "Name": "Gaya", "Pincode": "600001"},
+                    ],
+                }
+            ]
+        ).encode()
+        mocked_urlopen.return_value.__enter__.return_value.read.return_value = response_body
+
+        response = self.client.get("/api/location-pincodes", {"state": "Bihar", "city": "Gaya"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), ["823001"])
+        self.assertIn("Gaya", mocked_urlopen.call_args.args[0])
+
+    def test_pincode_lookup_rejects_city_outside_selected_state(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        response = self.client.get("/api/location-pincodes", {"state": "Bihar", "city": "Mumbai"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_listing_accepts_other_city_and_six_digit_pincode(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        hotel = {
+            "name": "Custom City Hotel",
+            "air_conditioning": "AC",
+            "price_range": "Medium",
+            "star_rating": 3,
+            "locations": [
+                {
+                    "state": "Bihar",
+                    "city": "A village not in the city list",
+                    "postal_code": "823099",
+                    "contact_info": "1234567890",
+                    "address": "Test address",
+                    "city_is_other": True,
+                    "postal_code_is_other": True,
+                }
+            ],
+        }
+        with patch("tourism.views.fetch_location_pincodes") as lookup:
+            response = self.client.post(
+                "/api/admin/listings/hotels",
+                data=json.dumps(hotel),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["locations"][0]["city"], hotel["locations"][0]["city"])
+        self.assertEqual(response.json()["locations"][0]["postal_code"], hotel["locations"][0]["postal_code"])
+        lookup.assert_not_called()
+        self.assertTrue(
+            CityPincode.objects.filter(
+                state="Bihar",
+                city=hotel["locations"][0]["city"],
+                postal_code=hotel["locations"][0]["postal_code"],
+            ).exists()
+        )
+        self.assertEqual(
+            CityPincode.objects.filter(
+                state="Bihar",
+                city=hotel["locations"][0]["city"],
+                postal_code=hotel["locations"][0]["postal_code"],
+            ).count(),
+            1,
+        )
+        repeated_pincode = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps(hotel),
+            content_type="application/json",
+        )
+        self.assertEqual(repeated_pincode.status_code, 201)
+        self.assertEqual(
+            CityPincode.objects.filter(
+                state="Bihar",
+                city=hotel["locations"][0]["city"],
+                postal_code=hotel["locations"][0]["postal_code"],
+            ).count(),
+            1,
+        )
+
+        response = self.client.get(
+            "/api/location-pincodes",
+            {"state": "Bihar", "city": hotel["locations"][0]["city"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), ["823099"])
+        self.assertContains(self.client.get("/"), hotel["locations"][0]["city"])
+        self.assertIn(hotel["locations"][0]["city"], self.client.get("/").context["state_cities"]["Bihar"])
+
+        hotel["locations"][0].update(
+            city="Gaya",
+            postal_code="823001",
+            city_is_other=False,
+            postal_code_is_other=True,
+        )
+        with patch("tourism.views.fetch_location_pincodes", return_value=["823001"]):
+            response = self.client.post(
+                "/api/admin/listings/hotels",
+                data=json.dumps(hotel),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 201)
+        self.client.delete(f"/api/admin/listings/hotels/{response.json()['id']}")
+
+        hotel["locations"][0]["postal_code"] = "1234"
+        response = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps({**hotel, "postal_code_is_other": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 422)
+
+    @patch("tourism.views.fetch_location_pincodes", return_value=["823001", "800001"])
+    def test_listing_rejects_a_pincode_not_mapped_to_its_city(self, _mock_pincodes):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        hotel = {
+            "name": "Test Hotel",
+            "state": "Bihar",
+            "city": "Gaya",
+            "postal_code": "800001",
+            "contact_info": "1234567890",
+            "address": "Test address",
+            "air_conditioning": "AC",
+            "price_range": "Medium",
+            "star_rating": 3,
+        }
+        response = self.client.post(
+            "/api/admin/listings/hotels",
+            data=json.dumps(hotel),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Hotel.objects.exists())
+
+    @patch("tourism.views.fetch_location_pincodes", return_value=["823001"])
+    def test_custom_guide_languages_are_reused_without_case_duplicates(self, _mock_pincodes):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        guide = {
+            "name": "First Guide",
+            "contact_info": "1234567890",
+            "state": "Bihar",
+            "city": "Gaya",
+            "postal_code": "823001",
+            "languages": "Hindi, Spanish, spanish",
+            "price": "1200.00",
+        }
+        first = self.client.post(
+            "/api/admin/listings/guides",
+            data=json.dumps(guide),
+            content_type="application/json",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(first.json()["languages"], "Hindi, Spanish")
+        self.assertEqual(GuideLanguage.objects.filter(name__iexact="Spanish").count(), 1)
+
+        guide["name"] = "Second Guide"
+        guide["languages"] = "SPANISH, English"
+        second = self.client.post(
+            "/api/admin/listings/guides",
+            data=json.dumps(guide),
+            content_type="application/json",
+        )
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(second.json()["languages"], "SPANISH, English")
+        self.assertEqual(GuideLanguage.objects.filter(name__iexact="Spanish").count(), 1)
+
+        homepage = self.client.get("/")
+        self.assertContains(homepage, 'value="Spanish" data-guide-language')
+        self.assertEqual(homepage.content.count(b'value="Spanish" data-guide-language'), 1)
 
     def test_public_place_filter_and_booking_creation(self):
         Place.objects.create(

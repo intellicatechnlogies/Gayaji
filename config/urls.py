@@ -1,8 +1,9 @@
 from django.urls import include, path
 
-from tourism.views import home
+from tourism import views
 
 urlpatterns = [
-    path("", home, name="home"),
+    path("", views.home, name="home"),
+    path("admin/", views.admin_page, name="admin-page"),
     path("api/", include("tourism.urls")),
 ]
