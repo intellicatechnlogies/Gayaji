@@ -35,7 +35,11 @@ from .management.commands.send_database_backup import (
     database_backup,
     prune_old_backups,
 )
-from .backup_scheduler import BACKUP_INTERVAL_SECONDS, run_backup_scheduler
+from .backup_scheduler import (
+    BACKUP_INTERVAL_SECONDS,
+    _try_acquire_process_lock,
+    run_backup_scheduler,
+)
 from .views import hash_password, verify_password
 
 
@@ -223,20 +227,31 @@ class TourismApiTests(TestCase):
         send_backup.assert_called_once_with("send_database_backup")
         self.assertEqual(BACKUP_INTERVAL_SECONDS, 3600)
 
+    def test_backup_scheduler_process_lock_allows_only_one_owner(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = Path(temp_dir) / "scheduler.lock"
+            first_lock = _try_acquire_process_lock(lock_path)
+            self.assertIsNotNone(first_lock)
+            try:
+                self.assertIsNone(_try_acquire_process_lock(lock_path))
+            finally:
+                first_lock.close()
+
+            second_lock = _try_acquire_process_lock(lock_path)
+            self.assertIsNotNone(second_lock)
+            second_lock.close()
+
     def test_app_startup_only_enables_scheduler_for_web_process(self):
         from tourism.apps import TourismConfig
 
         cases = (
-            (["manage.py", "test"], {}, False),
-            (["manage.py", "runserver"], {"RUN_MAIN": "true"}, True),
-            (["manage.py", "runserver", "--noreload"], {}, True),
-            (["manage.py", "runserver"], {}, False),
-            (["gunicorn"], {"GAYAJI_WEB_PROCESS": "1"}, True),
+            ({}, False),
+            ({"RUN_MAIN": "true"}, False),
+            ({"GAYAJI_WEB_PROCESS": "1"}, True),
         )
-        for argv, environment, should_start in cases:
-            with self.subTest(argv=argv, environment=environment):
+        for environment, should_start in cases:
+            with self.subTest(environment=environment):
                 with (
-                    patch("tourism.apps.sys.argv", argv),
                     patch.dict("tourism.apps.os.environ", environment, clear=True),
                     patch("tourism.backup_scheduler.start_backup_scheduler") as start_scheduler,
                 ):

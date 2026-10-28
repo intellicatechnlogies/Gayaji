@@ -10,6 +10,7 @@ venv/
 .github/*
 bodh_gaya_tourism.db
 *.db
+*.backup-scheduler.lock
 
 # Local configuration and secrets
 .env
