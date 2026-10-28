@@ -14,12 +14,15 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import UploadedFile
 from django.core.mail import send_mail
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
+from django.http.multipartparser import MultiPartParser, MultiPartParserError
 from django.shortcuts import render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -41,6 +44,13 @@ from .models import (
     StoredCredentialApiUser,
 )
 from .credential_vault import decrypt_credential, encrypt_credential
+from .s3_storage import (
+    S3StorageError,
+    delete_place_image,
+    get_place_image_url,
+    prepare_place_image,
+    upload_place_image,
+)
 from cryptography.fernet import InvalidToken
 
 ADMIN_SESSION_COOKIE = "beyond_admin_session"
@@ -48,7 +58,6 @@ ADMIN_SESSION_DURATION = timedelta(hours=12)
 PLACE_FIELDS = {
     "name": (2, 160),
     "description": (10, None),
-    "image": (5, 1000),
     "region": (2, 100),
     "category": (2, 100),
 }
@@ -82,6 +91,18 @@ def json_body(request: HttpRequest) -> tuple[dict | None, JsonResponse | None]:
     if not isinstance(data, dict):
         return None, JsonResponse({"detail": "Request body must be a JSON object"}, status=400)
     return data, None
+
+
+def multipart_form_data(request: HttpRequest) -> tuple[dict, UploadedFile | None]:
+    if request.method == "POST":
+        return request.POST.dict(), request.FILES.get("image")
+    data, files = MultiPartParser(
+        request.META,
+        request,
+        request.upload_handlers,
+        request.encoding,
+    ).parse()
+    return data.dict(), files.get("image")
 
 
 def validate_fields(data: dict, rules: dict, *, partial: bool = False) -> dict:
@@ -132,7 +153,7 @@ def place_data(place: Place) -> dict:
         "id": place.id,
         "name": place.name,
         "description": place.description,
-        "image": place.image,
+        "image": reverse("place-image", kwargs={"place_id": place.id}),
         "region": place.region,
         "category": place.category,
     }
@@ -212,34 +233,7 @@ def send_email_alert(subject: str, message: str) -> bool:
 
 
 def home(request: HttpRequest, admin_page: bool = False) -> HttpResponse:
-    photo_credits = {
-        "Mahabodhi Temple": "https://commons.wikimedia.org/wiki/File:Mahabodhitemple.jpg",
-        "The Great Buddha Statue": "https://commons.wikimedia.org/wiki/File:Great_Buddha_Statue,_Bodh_Gaya_at_Sunset.jpg",
-        "Vishnupad Temple": "https://commons.wikimedia.org/wiki/File:Vishnupad_Temple,Updated.jpg",
-        "Nalanda Mahavihara": "https://commons.wikimedia.org/wiki/File:Nalanda,_Buddhist_university_04.jpg",
-        "Nalanda Archaeological Museum": "https://commons.wikimedia.org/wiki/File:Nalanda,_Buddhist_university_04.jpg",
-        "Rajgir Ropeway & Vishwa Shanti Stupa": "https://commons.wikimedia.org/wiki/File:Shanti_Stupa_at_Rajgir_(cropped).jpg",
-        "Griddhakuta Hill": "https://commons.wikimedia.org/wiki/File:Cyclopian_wall,_Rajgir._(5457385482)_(cropped).jpg",
-        "Barabar Caves": "https://commons.wikimedia.org/wiki/File:Lomas_Rishi_entrance.jpg",
-    }
-    place_images = {
-        "Mahabodhi Temple": "https://thumb.wikimedia.org/wikipedia/commons/thumb/4/4e/Mahabodhitemple.jpg/1280px-Mahabodhitemple.jpg",
-        "The Great Buddha Statue": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/bf/Great_Buddha_Statue%2C_Bodh_Gaya_at_Sunset.jpg/1280px-Great_Buddha_Statue%2C_Bodh_Gaya_at_Sunset.jpg",
-        "Vishnupad Temple": "https://thumb.wikimedia.org/wikipedia/commons/thumb/f/ff/Vishnupad_Temple%2CUpdated.jpg/1280px-Vishnupad_Temple%2CUpdated.jpg",
-        "Nalanda Mahavihara": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/09/Nalanda%2C_Buddhist_university_04.jpg/1280px-Nalanda%2C_Buddhist_university_04.jpg",
-        "Nalanda Archaeological Museum": "https://thumb.wikimedia.org/wikipedia/commons/thumb/0/09/Nalanda%2C_Buddhist_university_04.jpg/1280px-Nalanda%2C_Buddhist_university_04.jpg",
-        "Rajgir Ropeway & Vishwa Shanti Stupa": "https://thumb.wikimedia.org/wikipedia/commons/thumb/7/7f/Shanti_Stupa_at_Rajgir_%28cropped%29.jpg/1280px-Shanti_Stupa_at_Rajgir_%28cropped%29.jpg",
-        "Griddhakuta Hill": "https://thumb.wikimedia.org/wikipedia/commons/thumb/d/db/Cyclopian_wall%2C_Rajgir._%285457385482%29_%28cropped%29.jpg/1280px-Cyclopian_wall%2C_Rajgir._%285457385482%29_%28cropped%29.jpg",
-        "Barabar Caves": "https://thumb.wikimedia.org/wikipedia/commons/thumb/2/25/Lomas_Rishi_entrance.jpg/1280px-Lomas_Rishi_entrance.jpg",
-    }
-    places = [
-        {
-            **place_data(place),
-            "image": place_images.get(place.name, place.image),
-            "credit": photo_credits.get(place.name, ""),
-        }
-        for place in Place.objects.all()
-    ]
+    places = [place_data(place) for place in Place.objects.all()]
     state_cities = {state: set(cities) for state, cities in STATE_CITIES.items()}
     for location in CityPincode.objects.values("state", "city").distinct():
         state_cities.setdefault(location["state"], set()).add(location["city"])
@@ -445,17 +439,34 @@ def places(request: HttpRequest) -> JsonResponse:
 
     if current_admin(request) is None:
         return unauthorized()
-    data, error = json_body(request)
-    if error:
-        return error
+    if request.content_type.startswith("multipart/form-data"):
+        try:
+            data, image_file = multipart_form_data(request)
+        except MultiPartParserError:
+            return JsonResponse({"detail": "Invalid multipart form data."}, status=400)
+    else:
+        data, error = json_body(request)
+        if error:
+            return error
+        image_file = None
     data = {
         key: value.strip() if isinstance(value, str) else value
         for key, value in data.items()
     }
     errors = validate_fields(data, PLACE_FIELDS)
+    if image_file is None:
+        errors["image"] = "An image upload is required."
     if errors:
         return JsonResponse({"detail": errors}, status=422)
-    place = Place.objects.create(**{key: data[key] for key in PLACE_FIELDS})
+    try:
+        image = prepare_place_image(image_file)
+        with transaction.atomic():
+            place = Place.objects.create(**{key: data[key] for key in PLACE_FIELDS})
+            upload_place_image(place.id, *image)
+    except ValueError as exc:
+        return JsonResponse({"detail": {"image": str(exc)}}, status=422)
+    except S3StorageError as exc:
+        return JsonResponse({"detail": str(exc)}, status=503)
     return JsonResponse(place_data(place), status=201)
 
 
@@ -470,24 +481,59 @@ def place_detail(request: HttpRequest, place_id: int) -> JsonResponse | HttpResp
     if request.method == "GET":
         return JsonResponse(place_data(place))
     if request.method == "DELETE":
+        try:
+            delete_place_image(place.id)
+        except S3StorageError as exc:
+            return JsonResponse({"detail": str(exc)}, status=503)
         place.delete()
         return HttpResponse(status=204)
 
-    data, error = json_body(request)
-    if error:
-        return error
+    if request.content_type.startswith("multipart/form-data"):
+        try:
+            data, image_file = multipart_form_data(request)
+        except MultiPartParserError:
+            return JsonResponse({"detail": "Invalid multipart form data."}, status=400)
+    else:
+        data, error = json_body(request)
+        if error:
+            return error
+        image_file = None
     data = {
         key: value.strip() if isinstance(value, str) else value
         for key, value in data.items()
     }
     errors = validate_fields(data, PLACE_FIELDS, partial=True)
+    if not data and image_file is None:
+        errors["detail"] = "Provide fields or an image to update."
     if errors:
         return JsonResponse({"detail": errors}, status=422)
     for key in PLACE_FIELDS:
         if key in data:
             setattr(place, key, data[key])
-    place.save()
+    try:
+        if image_file is not None:
+            image = prepare_place_image(image_file)
+            upload_place_image(place.id, *image)
+        if data:
+            place.save()
+    except ValueError as exc:
+        return JsonResponse({"detail": {"image": str(exc)}}, status=422)
+    except S3StorageError as exc:
+        return JsonResponse({"detail": str(exc)}, status=503)
     return JsonResponse(place_data(place))
+
+
+@require_http_methods(["GET"])
+def place_image(request: HttpRequest, place_id: int) -> HttpResponse:
+    if not Place.objects.filter(pk=place_id).exists():
+        return JsonResponse({"detail": "Place not found"}, status=404)
+    try:
+        image_url = get_place_image_url(place_id)
+    except S3StorageError as exc:
+        return JsonResponse({"detail": str(exc)}, status=503)
+    if image_url is None:
+        return JsonResponse({"detail": "Place image not found"}, status=404)
+    return HttpResponseRedirect(image_url)
 
 
 @csrf_exempt

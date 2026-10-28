@@ -1,12 +1,15 @@
 import base64
 import json
-from io import StringIO
+from io import BytesIO, StringIO
 from unittest.mock import patch
 
 from django.contrib.staticfiles import finders
 from django.contrib.auth.hashers import make_password
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import CommandError, call_command
 from django.test import TestCase
+from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
+from PIL import Image
 
 from .models import (
     AdminAccount,
@@ -63,7 +66,6 @@ class TourismApiTests(TestCase):
         Place.objects.create(
             name="Template destination",
             description="A sufficiently detailed place description for the rendered page.",
-            image="https://example.com/destination.jpg",
             region="Nalanda",
             category="Heritage",
         )
@@ -85,7 +87,8 @@ class TourismApiTests(TestCase):
         self.assertContains(response, 'data-admin-section="search"')
         self.assertContains(response, 'id="place-region" name="region" required')
         self.assertContains(response, 'id="place-category" name="category" required')
-        self.assertContains(response, 'id="place-image" name="image" type="url" required')
+        self.assertContains(response, 'id="place-image" name="image" type="file"')
+        self.assertContains(response, 'id="place-image" name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif" required')
         self.assertContains(response, 'id="place-description" name="description" required')
         self.assertEqual(response.content.count(b'class="required-fields-note"'), 4)
         self.assertContains(response, 'data-listing-form="hotels"')
@@ -132,7 +135,6 @@ class TourismApiTests(TestCase):
         payload = {
             "name": "Test destination",
             "description": "A sufficiently long description for this test destination.",
-            "image": "https://example.com/place.jpg",
             "region": "Gaya",
             "category": "Heritage",
         }
@@ -148,9 +150,15 @@ class TourismApiTests(TestCase):
         self.assertTrue(login.cookies["beyond_admin_session"]["httponly"])
         self.assertEqual(self.client.get("/api/admin/session").status_code, 200)
 
-        created = self.client.post("/api/places", data=json.dumps(payload), content_type="application/json")
+        with patch("tourism.views.upload_place_image") as upload, patch("tourism.views.delete_place_image"):
+            created = self.client.post(
+                "/api/places",
+                data={**payload, "image": self.valid_place_image()},
+            )
         self.assertEqual(created.status_code, 201)
         place_id = created.json()["id"]
+        upload.assert_called_once()
+        self.assertNotIn("image", {field.name for field in Place._meta.fields})
         updated = self.client.patch(
             f"/api/places/{place_id}",
             data=json.dumps({"description": "An updated description with enough characters."}),
@@ -158,7 +166,9 @@ class TourismApiTests(TestCase):
         )
         self.assertEqual(updated.status_code, 200)
         self.assertEqual(updated.json()["description"], "An updated description with enough characters.")
-        self.assertEqual(self.client.delete(f"/api/places/{place_id}").status_code, 204)
+        with patch("tourism.views.delete_place_image") as delete_image:
+            self.assertEqual(self.client.delete(f"/api/places/{place_id}").status_code, 204)
+        delete_image.assert_called_once_with(place_id)
 
         self.assertEqual(self.client.post("/api/admin/logout").status_code, 204)
         self.assertEqual(self.client.get("/api/admin/session").status_code, 401)
@@ -173,7 +183,6 @@ class TourismApiTests(TestCase):
         valid_payload = {
             "name": "Valid place",
             "description": "A valid destination description.",
-            "image": "https://example.com/place.jpg",
             "region": "Gaya",
             "category": "Heritage",
         }
@@ -182,11 +191,74 @@ class TourismApiTests(TestCase):
                 payload = {**valid_payload, field: "   "}
                 response = self.client.post(
                     "/api/places",
-                    data=json.dumps(payload),
-                    content_type="application/json",
+                    data={**payload, "image": self.valid_place_image()},
                 )
                 self.assertEqual(response.status_code, 422)
+        missing_image = self.client.post("/api/places", data=valid_payload)
+        self.assertEqual(missing_image.status_code, 422)
         self.assertFalse(Place.objects.exists())
+
+    def test_place_image_upload_replacement_and_public_s3_redirect(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        with patch("tourism.views.upload_place_image") as upload:
+            response = self.client.post(
+                "/api/places",
+                data={
+                    "name": "Image place",
+                    "description": "A destination with a directly uploaded image.",
+                    "region": "Gaya",
+                    "category": "Heritage",
+                    "image": self.valid_place_image(),
+                },
+            )
+            self.assertEqual(response.status_code, 201)
+            place_id = response.json()["id"]
+            self.assertEqual(response.json()["image"], f"/api/places/{place_id}/image")
+            self.assertEqual(upload.call_args.args[0], place_id)
+            self.assertEqual(upload.call_args.args[2], "image/png")
+
+            replacement = self.client.generic(
+                "PATCH",
+                f"/api/places/{place_id}",
+                encode_multipart(BOUNDARY, {"image": self.valid_place_image()}),
+                content_type=MULTIPART_CONTENT,
+            )
+            self.assertEqual(replacement.status_code, 200)
+            self.assertEqual(upload.call_count, 2)
+
+        with patch("tourism.views.get_place_image_url", return_value="https://s3.example/signed-image"):
+            image_response = self.client.get(f"/api/places/{place_id}/image")
+        self.assertEqual(image_response.status_code, 302)
+        self.assertEqual(image_response["Location"], "https://s3.example/signed-image")
+
+    def test_invalid_place_image_is_rejected(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        response = self.client.post(
+            "/api/places",
+            data={
+                "name": "Image place",
+                "description": "A destination with an invalid image file.",
+                "region": "Gaya",
+                "category": "Heritage",
+                "image": SimpleUploadedFile("not-an-image.txt", b"not an image", content_type="text/plain"),
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(Place.objects.exists())
+
+    @staticmethod
+    def valid_place_image():
+        image_buffer = BytesIO()
+        Image.new("RGB", (2, 2), color="red").save(image_buffer, format="PNG")
+        return SimpleUploadedFile("place.png", image_buffer.getvalue(), content_type="image/png")
 
     def test_invalid_admin_password_is_rejected(self):
         response = self.client.post(
@@ -748,7 +820,6 @@ class TourismApiTests(TestCase):
         Place.objects.create(
             name="Nalanda test",
             description="An ancient destination description for API tests.",
-            image="https://example.com/nalanda.jpg",
             region="Nalanda",
             category="Heritage",
         )

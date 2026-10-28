@@ -9,6 +9,7 @@ urlpatterns = [
     path("admin/session", views.admin_session_status, name="admin-session"),
     path("admin/logout", views.admin_logout, name="admin-logout"),
     path("places", views.places, name="places"),
+    path("places/<int:place_id>/image", views.place_image, name="place-image"),
     path("places/<int:place_id>", views.place_detail, name="place-detail"),
     path("inquiries", views.create_inquiry, name="inquiries"),
     path("bookings", views.create_booking, name="bookings"),

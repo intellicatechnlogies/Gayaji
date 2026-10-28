@@ -85,9 +85,8 @@
           {% for place in places %}
           <article class="place-card" data-place-card data-region="{{ place.region }}">
             <div class="place-img-wrap">
-              <img class="place-img" src="{{ place.image }}" alt="{{ place.name }}" loading="lazy">
+              <img class="place-img" src="{{ place.image }}" alt="{{ place.name }}" loading="lazy" data-place-image>
               <span class="place-tag">{{ place.category }}</span>
-              {% if place.credit %}<a class="photo-credit" href="{{ place.credit }}" target="_blank" rel="noreferrer">Photo: Wikimedia Commons</a>{% endif %}
             </div>
             <div class="place-body">
               <div class="place-region">⌖ {{ place.region }}</div>
@@ -302,7 +301,7 @@
             <div class="form-field full"><label for="place-name" data-en="Name" data-hi="नाम">Name</label><input id="place-name" name="name" required minlength="2" maxlength="160"></div>
             <div class="form-field"><label for="place-region" data-en="Region" data-hi="क्षेत्र">Region</label><select id="place-region" name="region" required>{% for region in regions %}<option>{{ region }}</option>{% endfor %}</select></div>
             <div class="form-field"><label for="place-category" data-en="Category" data-hi="श्रेणी">Category</label><input id="place-category" name="category" required minlength="2" maxlength="100"></div>
-            <div class="form-field full"><label for="place-image" data-en="Image URL" data-hi="चित्र URL">Image URL</label><input id="place-image" name="image" type="url" required maxlength="1000"></div>
+            <div class="form-field full"><label for="place-image" data-en="Destination image" data-hi="गंतव्य की तस्वीर">Destination image</label><input id="place-image" name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif" required></div>
             <div class="form-field full"><label for="place-description" data-en="Description" data-hi="विवरण">Description</label><textarea id="place-description" name="description" required minlength="10"></textarea></div>
             <button class="button" type="submit" data-en="Save destination" data-hi="गंतव्य सहेजें">Save destination</button>
             <button class="button button-outline admin-cancel" id="admin-cancel-edit" type="button" data-en="Cancel" data-hi="रद्द करें">Cancel</button>

@@ -6,7 +6,6 @@ from django.db.models.functions import Lower
 class Place(models.Model):
     name = models.CharField(max_length=160, db_index=True)
     description = models.TextField()
-    image = models.CharField(max_length=1000)
     region = models.CharField(max_length=100, default="Bodh Gaya")
     category = models.CharField(max_length=100, default="Heritage")
     created_at = models.DateTimeField(auto_now_add=True)
