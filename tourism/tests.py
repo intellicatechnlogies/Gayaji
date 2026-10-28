@@ -1,6 +1,10 @@
 import base64
 import json
+import sqlite3
+import tempfile
+from contextlib import closing
 from io import BytesIO, StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 from django.contrib.staticfiles import finders
@@ -25,6 +29,13 @@ from .models import (
     StoredCredentialApiUser,
 )
 from .credential_vault import decrypt_credential, encrypt_credential
+from .management.commands.send_database_backup import (
+    BACKUP_EMAIL,
+    BACKUP_SUBJECT,
+    database_backup,
+    prune_old_backups,
+)
+from .backup_scheduler import BACKUP_INTERVAL_SECONDS, run_backup_scheduler
 from .views import hash_password, verify_password
 
 
@@ -61,6 +72,176 @@ class TourismApiTests(TestCase):
             username="admin",
             password_hash=hash_password("test-password-long-enough"),
         )
+
+    def test_database_backup_uses_sqlite_online_backup_api(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "source.db"
+            backup_path = Path(temp_dir) / "backup.db"
+            with closing(sqlite3.connect(source_path)) as source:
+                source.execute("CREATE TABLE backup_test (value TEXT)")
+                source.execute("INSERT INTO backup_test VALUES ('saved')")
+                source.commit()
+
+            database_backup(source_path, backup_path)
+
+            with closing(sqlite3.connect(backup_path)) as backup:
+                self.assertEqual(backup.execute("SELECT value FROM backup_test").fetchone(), ("saved",))
+
+    def test_database_backup_command_sends_attachment_and_runs_retention(self):
+        for name, value in {
+            "SMTP_Server": "smtp.gmail.com",
+            "Port": "587",
+            "App_Password": "test app password",
+        }.items():
+            StoredCredential.objects.create(
+                service="Email",
+                name=name,
+                encrypted_secret=encrypt_credential(value),
+            )
+
+        class FakeMailConnection:
+            def __init__(self):
+                self.messages = []
+                self.closed = False
+
+            def send_messages(self, messages):
+                self.messages.extend(messages)
+                return len(messages)
+
+            def close(self):
+                self.closed = True
+
+        fake_connection = FakeMailConnection()
+        with (
+            patch("tourism.management.commands.send_database_backup.get_connection", return_value=fake_connection) as get_connection,
+            patch(
+                "tourism.management.commands.send_database_backup.database_backup",
+                side_effect=lambda _source, destination: destination.write_bytes(b"sqlite backup"),
+            ) as make_backup,
+            patch("tourism.management.commands.send_database_backup.prune_old_backups", return_value=2) as prune,
+        ):
+            call_command("send_database_backup", stdout=StringIO())
+        make_backup.assert_called_once()
+
+        get_connection.assert_called_once_with(
+            host="smtp.gmail.com",
+            port=587,
+            username=BACKUP_EMAIL,
+            password="testapppassword",
+            use_tls=True,
+            use_ssl=False,
+            timeout=20,
+        )
+        self.assertTrue(fake_connection.closed)
+        self.assertEqual(len(fake_connection.messages), 1)
+        message = fake_connection.messages[0]
+        self.assertEqual(message.subject, BACKUP_SUBJECT)
+        self.assertEqual(message.from_email, BACKUP_EMAIL)
+        self.assertEqual(message.to, [BACKUP_EMAIL])
+        self.assertEqual(message.attachments[0].filename, "bodh_gaya_tourism.db")
+        prune.assert_called_once_with(BACKUP_EMAIL, "testapppassword")
+
+    def test_backup_retention_permanently_keeps_two_newest_matching_messages_per_mailbox(self):
+        class FakeImap:
+            def __init__(self):
+                self.selected_mailbox = ""
+                self.mailboxes = {
+                    "INBOX": {
+                        b"1": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
+                        b"2": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
+                        b"3": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
+                        b"4": ("Other subject", BACKUP_EMAIL, BACKUP_EMAIL),
+                    },
+                    "[Gmail]/Sent Mail": {
+                        b"1": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
+                        b"2": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
+                        b"3": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
+                    },
+                }
+                self.deleted = {}
+
+            def login(self, _username, _password):
+                return "OK", []
+
+            def list(self):
+                return "OK", [b'(\\HasNoChildren \\Sent) "/" "[Gmail]/Sent Mail"']
+
+            def select(self, mailbox, readonly=False):
+                self.selected_mailbox = mailbox.strip('"')
+                return ("OK" if not readonly else "NO"), []
+
+            def uid(self, operation, *args):
+                mailbox = self.mailboxes[self.selected_mailbox]
+                if operation == "search":
+                    return "OK", [b" ".join(mailbox)]
+                if operation == "fetch":
+                    subject, sender, recipient = mailbox[args[0]]
+                    headers = (
+                        "\r\n".join(
+                            (
+                                f"Subject: {subject}",
+                                f"From: {sender}",
+                                f"To: {recipient}",
+                                "",
+                                "",
+                            )
+                        )
+                    ).encode()
+                    return "OK", [(b"headers", headers)]
+                if operation == "store":
+                    self.deleted.setdefault(self.selected_mailbox, []).append(args[0])
+                    return "OK", []
+                raise AssertionError(f"Unexpected IMAP operation {operation}")
+
+            def expunge(self):
+                for uid in self.deleted.get(self.selected_mailbox, []):
+                    self.mailboxes[self.selected_mailbox].pop(uid)
+                return "OK", []
+
+            def logout(self):
+                return "BYE", []
+
+        fake_imap = FakeImap()
+        with patch("tourism.management.commands.send_database_backup.imaplib.IMAP4_SSL", return_value=fake_imap):
+            deleted = prune_old_backups(BACKUP_EMAIL, "app-password")
+
+        self.assertEqual(deleted, 2)
+        self.assertEqual(fake_imap.deleted["INBOX"], [b"1"])
+        self.assertEqual(fake_imap.deleted["[Gmail]/Sent Mail"], [b"1"])
+        self.assertEqual(len(fake_imap.mailboxes["INBOX"]), 3)
+        self.assertEqual(len(fake_imap.mailboxes["[Gmail]/Sent Mail"]), 2)
+
+    def test_background_scheduler_sends_backup_and_waits_five_minutes(self):
+        stop_event = type(
+            "StopAfterInterval",
+            (),
+            {"is_set": lambda self: False, "wait": lambda self, interval: interval == BACKUP_INTERVAL_SECONDS},
+        )()
+        with patch("tourism.backup_scheduler.call_command") as send_backup:
+            run_backup_scheduler(stop_event)
+
+        send_backup.assert_called_once_with("send_database_backup")
+        self.assertEqual(BACKUP_INTERVAL_SECONDS, 300)
+
+    def test_app_startup_only_enables_scheduler_for_web_process(self):
+        from tourism.apps import TourismConfig
+
+        cases = (
+            (["manage.py", "test"], {}, False),
+            (["manage.py", "runserver"], {"RUN_MAIN": "true"}, True),
+            (["manage.py", "runserver", "--noreload"], {}, True),
+            (["manage.py", "runserver"], {}, False),
+            (["gunicorn"], {"GAYAJI_WEB_PROCESS": "1"}, True),
+        )
+        for argv, environment, should_start in cases:
+            with self.subTest(argv=argv, environment=environment):
+                with (
+                    patch("tourism.apps.sys.argv", argv),
+                    patch.dict("tourism.apps.os.environ", environment, clear=True),
+                    patch("tourism.backup_scheduler.start_backup_scheduler") as start_scheduler,
+                ):
+                    TourismConfig("tourism", __import__("tourism")).ready()
+                self.assertEqual(start_scheduler.called, should_start)
 
     def test_homepage_uses_django_template_and_renders_database_destinations(self):
         Place.objects.create(
