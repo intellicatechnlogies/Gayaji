@@ -11,7 +11,9 @@
   const placeForm = document.getElementById('admin-place-form');
   const placeList = document.getElementById('admin-place-list');
   const stateCities = JSON.parse(document.getElementById('state-city-data').textContent);
-  const adminListingData = { hotels: [], restaurants: [], guides: [] };
+  const adminListingData = { hotels: [], restaurants: [], vans: [], guides: [] };
+  let planningRequests = [];
+  let editingPlanningRequestId = null;
   const adminSectionStorageKey = 'beyondAdminSection';
   document.querySelectorAll('[data-place-image]').forEach((image) => {
     image.addEventListener('error', () => { image.hidden = true; }, { once: true });
@@ -26,6 +28,10 @@
       explore: 'Explore', journey: 'The journey', map: 'The region', contact: 'Get in touch',
       adminError: 'Admin access could not be verified. Please sign in again.',
       saveError: 'Please check your details and try again.',
+      selectDestination: 'Choose at least one destination.',
+      selectArrangement: 'Choose at least one arrangement.',
+      selectBookingType: 'Choose at least one service.',
+      noDestinationsSelected: 'None selected',
       contactSuccess: 'Thank you! We’ll be in touch soon.',
       bookingSuccess: 'Your travel request is in. We’ll contact you shortly.',
       loginError: 'Invalid username or password.',
@@ -39,6 +45,10 @@
       explore: 'घूमें', journey: 'यात्रा', map: 'यह क्षेत्र', contact: 'संपर्क करें',
       adminError: 'एडमिन लॉगिन की जाँच नहीं हो सकी। फिर साइन इन करें।',
       saveError: 'कृपया जानकारी जाँचकर फिर कोशिश करें।',
+      selectDestination: 'कृपया कम से कम एक गंतव्य चुनें।',
+      selectArrangement: 'कृपया कम से कम एक व्यवस्था चुनें।',
+      selectBookingType: 'कृपया कम से कम एक सेवा चुनें।',
+      noDestinationsSelected: 'कुछ नहीं चुना',
       contactSuccess: 'धन्यवाद! हम जल्द आपसे संपर्क करेंगे।',
       bookingSuccess: 'आपका अनुरोध मिल गया। हम जल्द संपर्क करेंगे।',
       loginError: 'यूज़रनेम या पासवर्ड गलत है।',
@@ -84,6 +94,9 @@
     document.querySelector('#admin-place-form button[type="submit"]').textContent = text('save');
     placeList.querySelectorAll('[data-admin-action="edit"]').forEach((button) => { button.textContent = text('edit'); });
     placeList.querySelectorAll('[data-admin-action="delete"]').forEach((button) => { button.textContent = text('remove'); });
+    updateBookingDestinationSummary();
+    updateContactArrangementSummary();
+    updateBookingTypeSummary();
     document.querySelectorAll('[data-open-booking]').forEach((button) => {
       if (button.dataset.en && button.dataset.hi) button.textContent = button.dataset[language];
     });
@@ -289,8 +302,134 @@
 
   async function refreshAdminData() {
     await refreshPlaces();
-    await Promise.all(['hotels', 'restaurants', 'guides'].map(refreshListings));
+    await Promise.all([
+      ...['hotels', 'restaurants', 'vans', 'guides'].map(refreshListings),
+      refreshPlanningRequests(),
+    ]);
   }
+
+  function createPlanningRequestTable() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'admin-table-wrap';
+    if (!planningRequests.length) {
+      wrapper.classList.add('admin-table-empty');
+      wrapper.textContent = 'No planning requests yet.';
+      return wrapper;
+    }
+    const columns = [
+      ['created_at', 'Submitted'], ['request_type', 'Type'], ['name', 'Name'], ['email', 'Email'],
+      ['phone', 'Phone'], ['arrangements', 'Arrangements'], ['services', 'Services'],
+      ['destinations', 'Destinations'], ['travel_date', 'Travel date'], ['guests', 'Travellers'],
+      ['message', 'Notes / message'],
+    ];
+    const table = document.createElement('table');
+    table.className = 'admin-table';
+    const head = document.createElement('thead');
+    const headingRow = document.createElement('tr');
+    columns.forEach(([, label]) => {
+      const heading = document.createElement('th');
+      heading.scope = 'col';
+      heading.textContent = label;
+      headingRow.append(heading);
+    });
+    const actionsHeading = document.createElement('th');
+    actionsHeading.scope = 'col';
+    actionsHeading.textContent = 'Actions';
+    headingRow.append(actionsHeading);
+    head.append(headingRow);
+    const body = document.createElement('tbody');
+    planningRequests.forEach((item) => {
+      const row = document.createElement('tr');
+      columns.forEach(([field]) => {
+        const cell = document.createElement('td');
+        const value = item[field];
+        cell.textContent = field === 'created_at' && value
+          ? new Date(value).toLocaleString()
+          : field === 'request_type'
+            ? value === 'trip' ? 'Trip planning' : 'Contact inquiry'
+          : value ?? '';
+        row.append(cell);
+      });
+      const actions = document.createElement('td');
+      const edit = document.createElement('button');
+      edit.type = 'button';
+      edit.className = 'admin-table-delete';
+      edit.textContent = text('edit');
+      edit.addEventListener('click', () => editPlanningRequest(item));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'admin-table-delete';
+      remove.textContent = text('remove');
+      remove.addEventListener('click', () => deletePlanningRequest(item.id));
+      actions.append(edit, remove);
+      row.append(actions);
+      body.append(row);
+    });
+    table.append(head, body);
+    wrapper.append(table);
+    return wrapper;
+  }
+
+  async function refreshPlanningRequests() {
+    planningRequests = await apiRequest('/api/admin/planning-requests');
+    const table = createPlanningRequestTable();
+    table.id = 'planning-request-table';
+    document.getElementById('planning-request-table').replaceWith(table);
+  }
+
+  function editPlanningRequest(item) {
+    const form = document.getElementById('planning-request-form');
+    editingPlanningRequestId = item.id;
+    for (const field of [
+      'request_type', 'name', 'email', 'phone', 'arrangements', 'services',
+      'destinations', 'travel_date', 'guests', 'message',
+    ]) {
+      form.elements[field].value = item[field] ?? '';
+    }
+    form.hidden = false;
+    form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  async function deletePlanningRequest(id) {
+    if (!window.confirm('Delete this planning request?')) return;
+    try {
+      await apiRequest(`/api/admin/planning-requests/${id}`, { method: 'DELETE' });
+      await refreshPlanningRequests();
+      showToast('Planning request deleted.');
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
+  const planningRequestForm = document.getElementById('planning-request-form');
+  planningRequestForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!editingPlanningRequestId) return;
+    const payload = Object.fromEntries(new FormData(planningRequestForm));
+    payload.guests = payload.guests ? Number(payload.guests) : null;
+    const button = planningRequestForm.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      await apiRequest(`/api/admin/planning-requests/${editingPlanningRequestId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      });
+      editingPlanningRequestId = null;
+      planningRequestForm.reset();
+      planningRequestForm.hidden = true;
+      await refreshPlanningRequests();
+      showToast('Planning request updated.');
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.getElementById('planning-request-cancel').addEventListener('click', () => {
+    editingPlanningRequestId = null;
+    planningRequestForm.reset();
+    planningRequestForm.hidden = true;
+  });
 
   function createListingTable(listingType, listings, searchTerm = '') {
     const columns = {
@@ -303,11 +442,20 @@
         ['name', 'Restaurant'], ['state', 'State'], ['city', 'City'], ['postal_code', 'PIN code'],
         ['contact_info', 'Contact'], ['address', 'Address'], ['food_type', 'Food'], ['price_range', 'Price'],
       ],
+      vans: [
+        ['name', 'Provider / van'], ['state', 'State'], ['city', 'City'], ['postal_code', 'PIN code'],
+        ['contact_info', 'Contact'], ['address', 'Address'], ['vehicle_type', 'Vehicle type'],
+        ['seat_capacity', 'Seats'], ['booking_charge_per_day', 'Booking charge / day (₹)'],
+        ['per_km_charge', 'Charge / km (₹)'],
+      ],
       guides: [
         ['name', 'Guide'], ['state', 'State'], ['city', 'City'], ['postal_code', 'PIN code'],
         ['contact_info', 'Contact'], ['languages', 'Languages'], ['price', 'Price'],
       ],
     }[listingType];
+    if (!columns) {
+      throw new Error(`Unsupported listing type: ${listingType}`);
+    }
     const allRows = listingType === 'hotels'
       ? listings.flatMap((hotel) => hotel.locations.map((location) => ({
         ...hotel,
@@ -491,6 +639,29 @@
         });
       }
     });
+    if (selectedTypes.has('vans')) adminListingData.vans.forEach((van) => {
+      const locationText = [van.state, van.city, van.postal_code].join(' ').toLocaleLowerCase();
+      if (terms.every((term) => locationText.includes(term))) {
+        matches.push({
+          type: 'Van',
+          name: van.name,
+          city: van.city,
+          state: van.state,
+          postalCode: van.postal_code,
+          contact: van.contact_info,
+          vehicleType: van.vehicle_type,
+          dailyCharge: van.booking_charge_per_day === null ? null : Number(van.booking_charge_per_day),
+          perKmCharge: van.per_km_charge === null ? null : Number(van.per_km_charge),
+          details: [
+            ['Address', van.address],
+            ['Vehicle type', van.vehicle_type],
+            ['Seat capacity', van.seat_capacity],
+            ['Booking charge (per day)', van.booking_charge_per_day === null ? '' : `₹${van.booking_charge_per_day}`],
+            ['Charge per km', van.per_km_charge === null ? '' : `₹${van.per_km_charge}`],
+          ],
+        });
+      }
+    });
     if (selectedTypes.has('guides')) adminListingData.guides.forEach((guide) => {
       const locationText = [guide.state, guide.city, guide.postal_code].join(' ').toLocaleLowerCase();
       if (terms.every((term) => locationText.includes(term))) {
@@ -543,6 +714,20 @@
         if (filterValue('restaurant-price') && match.priceRange.toLowerCase() !== filterValue('restaurant-price').toLowerCase()) {
           return false;
         }
+      } else if (match.type === 'Van') {
+        if (filterValue('van-type') && match.vehicleType.toLowerCase() !== filterValue('van-type').toLowerCase()) {
+          return false;
+        }
+        const minDailyCharge = filterValue('van-min-daily-charge');
+        const maxDailyCharge = filterValue('van-max-daily-charge');
+        const minPerKmCharge = filterValue('van-min-per-km-charge');
+        const maxPerKmCharge = filterValue('van-max-per-km-charge');
+        if ((minDailyCharge !== '' || maxDailyCharge !== '') && match.dailyCharge === null) return false;
+        if ((minPerKmCharge !== '' || maxPerKmCharge !== '') && match.perKmCharge === null) return false;
+        if (minDailyCharge !== '' && match.dailyCharge < Number(minDailyCharge)) return false;
+        if (maxDailyCharge !== '' && match.dailyCharge > Number(maxDailyCharge)) return false;
+        if (minPerKmCharge !== '' && match.perKmCharge < Number(minPerKmCharge)) return false;
+        if (maxPerKmCharge !== '' && match.perKmCharge > Number(maxPerKmCharge)) return false;
       } else {
         if (chosenGuideLanguages.size) {
           const guideLanguages = match.languages.split(',').map((name) => name.trim().toLocaleLowerCase());
@@ -555,13 +740,14 @@
     });
 
     if (!filteredMatches.length) {
-      results.textContent = 'No hotels, restaurants, or guides found for that location.';
+      results.textContent = 'No hotels, restaurants, vans, or guides found for that location.';
       return;
     }
 
     const groups = [
       { type: 'Hotel', records: filteredMatches.filter((match) => match.type === 'Hotel') },
       { type: 'Restaurant', records: filteredMatches.filter((match) => match.type === 'Restaurant') },
+      { type: 'Van', records: filteredMatches.filter((match) => match.type === 'Van') },
       { type: 'Guide', records: filteredMatches.filter((match) => match.type === 'Guide') },
     ];
     const sections = groups.filter((group) => group.records.length).map((group) => {
@@ -973,13 +1159,47 @@
 
   document.querySelectorAll('[data-open-booking]').forEach((button) => {
     button.addEventListener('click', () => {
+      const selectedRegion = button.dataset.region || 'Bodh Gaya';
+      const destinationChecks = document.querySelectorAll('#booking-form input[name="destination"]');
+      destinationChecks.forEach((checkbox) => {
+        checkbox.checked = checkbox.value === selectedRegion;
+      });
+      updateBookingDestinationSummary();
       document.getElementById('booking-place').textContent = button.dataset.place
         ? `${button.dataset.place} · ${button.dataset.region}`
         : '';
-      document.getElementById('booking-destination').value = button.dataset.region || 'Bodh Gaya';
+      document.getElementById('booking-destination-dropdown').open = false;
       bookingBackdrop.hidden = false;
     });
   });
+  const bookingDestinationChecks = document.querySelectorAll('#booking-form input[name="destination"]');
+  function updateSelectionSummary(formSelector, inputName, summaryId) {
+    const selectedCount = document.querySelectorAll(`${formSelector} input[name="${inputName}"]:checked`).length;
+    document.getElementById(summaryId).textContent = selectedCount
+      ? language === 'hi' ? `${selectedCount} चुने गए` : `${selectedCount} selected`
+      : text('noDestinationsSelected');
+  }
+  function updateBookingDestinationSummary() {
+    updateSelectionSummary('#booking-form', 'destination', 'booking-destination-summary');
+  }
+  function updateContactArrangementSummary() {
+    updateSelectionSummary('#contact-form', 'arrangements', 'contact-arrangements-summary');
+  }
+  function updateBookingTypeSummary() {
+    updateSelectionSummary('#booking-form', 'booking_type', 'booking-type-summary');
+  }
+  bookingDestinationChecks.forEach((checkbox) => {
+    checkbox.addEventListener('change', updateBookingDestinationSummary);
+  });
+  document.querySelectorAll('#contact-form input[name="arrangements"]').forEach((checkbox) => {
+    checkbox.addEventListener('change', updateContactArrangementSummary);
+  });
+  document.querySelectorAll('#booking-form input[name="booking_type"]').forEach((checkbox) => {
+    checkbox.addEventListener('change', updateBookingTypeSummary);
+  });
+  updateBookingDestinationSummary();
+  updateContactArrangementSummary();
+  updateBookingTypeSummary();
   document.querySelectorAll('[data-close-booking]').forEach((button) => button.addEventListener('click', () => {
     bookingBackdrop.hidden = true;
   }));
@@ -995,19 +1215,46 @@
   document.getElementById('booking-date').min = new Date().toISOString().slice(0, 10);
 
   async function submitPublicForm(form, endpoint, successMessage) {
+    const submitButton = form.querySelector('button[type="submit"]');
+    if (submitButton.disabled) return;
+    const cooldownEndsAt = Date.now() + 10000;
+    let requestPending = false;
+    submitButton.disabled = true;
+    window.setTimeout(() => {
+      if (!requestPending) submitButton.disabled = false;
+    }, 10000);
+
     const payload = Object.fromEntries(new FormData(form));
-    if (payload.guests) payload.guests = Number(payload.guests);
-    if (payload.service) {
-      const serviceLabels = {
-        'complete-trip': language === 'hi' ? 'मेरी पूरी यात्रा की योजना' : 'Plan my complete trip',
-        accommodation: language === 'hi' ? 'होटल / ठहरने की व्यवस्था' : 'Accommodation / stay',
-        'private-van': language === 'hi' ? 'निजी वैन या कैब' : 'Private van or cab',
-        'guided-visits': language === 'hi' ? 'गाइडेड विज़िट और टूर' : 'Guided visits and tours',
-        custom: language === 'hi' ? 'कुछ और' : 'Something else',
-      };
-      payload.message = `Requested arrangements: ${serviceLabels[payload.service] || payload.service}\n\n${payload.message}`;
-      delete payload.service;
+    if (form.id === 'booking-form') {
+      payload.booking_type = Array.from(
+        form.querySelectorAll('input[name="booking_type"]:checked'),
+        (checkbox) => checkbox.value,
+      );
+      if (!payload.booking_type.length) {
+        showToast(text('selectBookingType'), true);
+        return;
+      }
+      payload.destination = Array.from(
+        form.querySelectorAll('input[name="destination"]:checked'),
+        (checkbox) => checkbox.value,
+      );
+      if (!payload.destination.length) {
+        showToast(text('selectDestination'), true);
+        return;
+      }
     }
+    if (form.id === 'contact-form') {
+      payload.arrangements = Array.from(
+        form.querySelectorAll('input[name="arrangements"]:checked'),
+        (checkbox) => checkbox.value,
+      );
+      if (!payload.arrangements.length) {
+        showToast(text('selectArrangement'), true);
+        return;
+      }
+    }
+    if (payload.guests) payload.guests = Number(payload.guests);
+    requestPending = true;
     try {
       await apiRequest(endpoint, { method: 'POST', body: JSON.stringify(payload) });
       form.reset();
@@ -1015,6 +1262,9 @@
       showToast(successMessage);
     } catch (error) {
       showToast(error.message || text('saveError'), true);
+    } finally {
+      requestPending = false;
+      if (Date.now() >= cooldownEndsAt) submitButton.disabled = false;
     }
   }
 

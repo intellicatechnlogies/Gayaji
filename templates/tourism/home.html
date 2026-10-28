@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{% static 'styles.css' %}">
-    <script defer src="{% static 'site.js' %}"></script>
+    <script defer src="{% static 'site.js' %}?v=van-charge-ranges-1"></script>
   </head>
   <body class="{% if admin_page %}admin-page{% endif %}" data-admin-page="{{ admin_page|yesno:'true,false' }}">
     <div class="topline">
@@ -152,14 +152,18 @@
           <form class="contact-form" id="contact-form">
             <div class="form-field"><label for="contact-name" data-en="Your name" data-hi="आपका नाम">Your name</label><input id="contact-name" name="name" required minlength="2" placeholder="Jane Smith"></div>
             <div class="form-field"><label for="contact-email" data-en="Email address" data-hi="ईमेल पता">Email address</label><input id="contact-email" name="email" type="email" required placeholder="jane@example.com"></div>
-            <div class="form-field full"><label for="contact-service" data-en="What would you like us to arrange?" data-hi="आप क्या व्यवस्थित करवाना चाहेंगे?">What would you like us to arrange?</label>
-              <select id="contact-service" name="service">
-                <option value="complete-trip" data-en="Plan my complete trip" data-hi="मेरी पूरी यात्रा की योजना बनाएं">Plan my complete trip</option>
-                <option value="accommodation" data-en="Accommodation / stay" data-hi="होटल / ठहरने की व्यवस्था">Accommodation / stay</option>
-                <option value="private-van" data-en="Private van or cab" data-hi="निजी वैन या कैब">Private van or cab</option>
-                <option value="guided-visits" data-en="Guided visits and tours" data-hi="गाइडेड विज़िट और टूर">Guided visits and tours</option>
-                <option value="custom" data-en="Something else" data-hi="कुछ और">Something else</option>
-              </select>
+            <div class="form-field full">
+              <span class="booking-field-label" id="contact-arrangements-label" data-en="What would you like us to arrange?" data-hi="आप क्या व्यवस्थित करवाना चाहेंगे?">What would you like us to arrange?</span>
+              <details class="booking-destination-dropdown" id="contact-arrangements-dropdown" aria-labelledby="contact-arrangements-label">
+                <summary><span data-en="Choose arrangements" data-hi="व्यवस्थाएं चुनें">Choose arrangements</span><span id="contact-arrangements-summary">1 selected</span></summary>
+                <div class="booking-destination-options">
+                  <label><input type="checkbox" name="arrangements" value="complete-trip" checked><span data-en="Plan my complete trip" data-hi="मेरी पूरी यात्रा की योजना बनाएं">Plan my complete trip</span></label>
+                  <label><input type="checkbox" name="arrangements" value="accommodation"><span data-en="Accommodation / stay" data-hi="होटल / ठहरने की व्यवस्था">Accommodation / stay</span></label>
+                  <label><input type="checkbox" name="arrangements" value="private-van"><span data-en="Private van or cab" data-hi="निजी वैन या कैब">Private van or cab</span></label>
+                  <label><input type="checkbox" name="arrangements" value="guided-visits"><span data-en="Guided visits and tours" data-hi="गाइडेड विज़िट और टूर">Guided visits and tours</span></label>
+                  <label><input type="checkbox" name="arrangements" value="custom"><span data-en="Something else" data-hi="कुछ और">Something else</span></label>
+                </div>
+              </details>
             </div>
             <div class="form-field full"><label for="contact-message" data-en="How can we help?" data-hi="हम आपकी कैसे मदद करें?">How can we help?</label><textarea id="contact-message" name="message" required minlength="10" maxlength="4500" placeholder="Tell us a little about the trip you have in mind…"></textarea></div>
             <button class="button" type="submit" data-en="Send your message　→" data-hi="अपना संदेश भेजें　→">Send your message　→</button>
@@ -180,12 +184,31 @@
           <button class="modal-close" type="button" data-close-booking aria-label="Close">×</button>
         </div>
         <form class="booking-form" id="booking-form">
-          <div class="form-field full"><label for="booking-type" data-en="I’m interested in" data-hi="मुझे इसमें रुचि है">I’m interested in</label><select id="booking-type" name="booking_type"><option value="hotel" data-en="Hotel / accommodation" data-hi="होटल / ठहरने की व्यवस्था">Hotel / accommodation</option><option value="cab" data-en="Cab / private van" data-hi="कैब / वैन">Cab / private van</option><option value="guided" data-en="Guided visit" data-hi="गाइडेड टूर">Guided visit</option></select></div>
+          <div class="form-field full">
+            <span class="booking-field-label" id="booking-type-label" data-en="I’m interested in" data-hi="मुझे इसमें रुचि है">I’m interested in</span>
+            <details class="booking-destination-dropdown" id="booking-type-dropdown" aria-labelledby="booking-type-label">
+              <summary><span data-en="Choose services" data-hi="सेवाएं चुनें">Choose services</span><span id="booking-type-summary">1 selected</span></summary>
+              <div class="booking-destination-options">
+                <label><input type="checkbox" name="booking_type" value="complete-trip"><span data-en="Plan my complete trip" data-hi="मेरी पूरी यात्रा की योजना बनाएं">Plan my complete trip</span></label>
+                <label><input type="checkbox" name="booking_type" value="hotel" checked><span data-en="Hotel / accommodation" data-hi="होटल / ठहरने की व्यवस्था">Hotel / accommodation</span></label>
+                <label><input type="checkbox" name="booking_type" value="cab"><span data-en="Cab / private van" data-hi="कैब / वैन">Cab / private van</span></label>
+                <label><input type="checkbox" name="booking_type" value="guided"><span data-en="Guided visit" data-hi="गाइडेड टूर">Guided visit</span></label>
+              </div>
+            </details>
+          </div>
           <div class="form-field"><label for="booking-name" data-en="Your name" data-hi="आपका नाम">Your name</label><input id="booking-name" name="name" required minlength="2"></div>
           <div class="form-field"><label for="booking-email" data-en="Email address" data-hi="ईमेल पता">Email address</label><input id="booking-email" name="email" type="email" required></div>
           <div class="form-field"><label for="booking-phone" data-en="Phone number" data-hi="फ़ोन नंबर">Phone number</label><input id="booking-phone" name="phone" required minlength="7"></div>
           <div class="form-field"><label for="booking-date" data-en="Travel date" data-hi="यात्रा की तारीख">Travel date</label><input id="booking-date" name="travel_date" type="date" required></div>
-          <div class="form-field"><label for="booking-destination" data-en="Destination" data-hi="गंतव्य">Destination</label><select id="booking-destination" name="destination">{% for region in regions %}<option value="{{ region }}">{{ region }}</option>{% endfor %}</select></div>
+          <div class="form-field booking-destination-field">
+            <span class="booking-field-label" id="booking-destination-label" data-en="Destination" data-hi="गंतव्य">Destination</span>
+            <details class="booking-destination-dropdown" id="booking-destination-dropdown" aria-labelledby="booking-destination-label">
+              <summary><span data-en="Choose destinations" data-hi="गंतव्य चुनें">Choose destinations</span><span id="booking-destination-summary" data-en="None selected" data-hi="कुछ नहीं चुना">None selected</span></summary>
+              <div class="booking-destination-options">
+                {% for region in regions %}<label><input type="checkbox" name="destination" value="{{ region }}"><span>{{ region }}</span></label>{% endfor %}
+              </div>
+            </details>
+          </div>
           <div class="form-field"><label for="booking-guests" data-en="Travellers" data-hi="यात्री">Travellers</label><input id="booking-guests" name="guests" type="number" min="1" max="30" value="2"></div>
           <div class="form-field full"><label for="booking-notes" data-en="Anything else?" data-hi="अन्य जानकारी">Anything else?</label><textarea id="booking-notes" name="notes" placeholder="Dates, preferences or questions…"></textarea></div>
           <button class="button" type="submit" data-en="Send request　→" data-hi="अनुरोध भेजें　→">Send request　→</button>
@@ -196,7 +219,7 @@
     <div class="admin-scrim" id="admin-scrim" hidden></div>
     <aside class="admin-panel" id="admin-panel" aria-label="Manage local listings" hidden>
       <div class="admin-toolbar"><div><div class="section-kicker">BIHAR BEYOND</div><h2 data-en="Manage local listings" data-hi="स्थानीय जानकारी प्रबंधित करें">Manage local listings</h2></div>{% if admin_page %}<a class="admin-back-link" href="/">Back to website</a>{% else %}<button class="modal-close" type="button" data-close-admin aria-label="Close admin panel">×</button>{% endif %}</div>
-      <p class="admin-description" data-en="Manage destinations, stays, places to eat and local guides." data-hi="गंतव्य, ठहरने की जगहें, रेस्टोरेंट और स्थानीय गाइड प्रबंधित करें।">Manage destinations, stays, places to eat and local guides.</p>
+      <p class="admin-description" data-en="Manage listings and trip-planning requests." data-hi="सूचियाँ और यात्रा-योजना अनुरोध प्रबंधित करें।">Manage listings and trip-planning requests.</p>
       <form class="admin-auth-form" id="admin-login-form">
         <h3 data-en="Admin sign in" data-hi="एडमिन साइन इन">Admin sign in</h3>
         <div class="form-field"><label for="admin-username" data-en="Username" data-hi="यूज़रनेम">Username</label><input id="admin-username" name="username" autocomplete="username" required maxlength="80"></div>
@@ -211,13 +234,33 @@
           <button class="admin-tab" type="button" data-admin-tab="places">Manage Places</button>
           <button class="admin-tab" type="button" data-admin-tab="hotels">Manage Hotels</button>
           <button class="admin-tab" type="button" data-admin-tab="restaurants">Manage Restaurants</button>
+          <button class="admin-tab" type="button" data-admin-tab="vans">Manage Vans</button>
           <button class="admin-tab" type="button" data-admin-tab="guides">Manage Guides</button>
+          <button class="admin-tab" type="button" data-admin-tab="planning">Planning Requests</button>
         </nav>
+        <section class="admin-section" data-admin-section="planning" hidden>
+          <form class="admin-form planning-request-form" id="planning-request-form" hidden>
+            <h3>Edit planning request</h3>
+            <div class="form-field"><label for="planning-request-type">Request type</label><select id="planning-request-type" name="request_type" required><option value="trip">Trip planning</option><option value="inquiry">Contact inquiry</option></select></div>
+            <div class="form-field"><label for="planning-request-name">Name</label><input id="planning-request-name" name="name" required maxlength="160"></div>
+            <div class="form-field"><label for="planning-request-email">Email</label><input id="planning-request-email" name="email" type="email" required maxlength="254"></div>
+            <div class="form-field"><label for="planning-request-phone">Phone</label><input id="planning-request-phone" name="phone" maxlength="40"></div>
+            <div class="form-field"><label for="planning-request-arrangements">Arrangements</label><input id="planning-request-arrangements" name="arrangements"></div>
+            <div class="form-field"><label for="planning-request-services">Services</label><input id="planning-request-services" name="services"></div>
+            <div class="form-field"><label for="planning-request-destinations">Destinations</label><input id="planning-request-destinations" name="destinations" maxlength="160"></div>
+            <div class="form-field"><label for="planning-request-date">Travel date</label><input id="planning-request-date" name="travel_date" maxlength="30"></div>
+            <div class="form-field"><label for="planning-request-guests">Travellers</label><input id="planning-request-guests" name="guests" type="number" min="1" max="30"></div>
+            <div class="form-field full"><label for="planning-request-message">Notes / message</label><textarea id="planning-request-message" name="message"></textarea></div>
+            <button class="button" type="submit">Save changes</button>
+            <button class="button button-outline" id="planning-request-cancel" type="button">Cancel</button>
+          </form>
+          <div class="admin-table-wrap" id="planning-request-table"></div>
+        </section>
         <section class="admin-section" data-admin-section="search">
           <section class="admin-overall-search" aria-labelledby="overall-location-search-title">
             <h3 id="overall-location-search-title">Search all listings by location</h3>
             <label class="listing-search">
-              <span class="visually-hidden">Search hotels, restaurants, and guides by state, city, or PIN code</span>
+              <span class="visually-hidden">Search hotels, restaurants, vans, and guides by state, city, or PIN code</span>
               <input type="search" data-overall-location-search placeholder="Enter a state, city, or PIN code">
             </label>
             <div data-overall-search-controls hidden>
@@ -225,6 +268,7 @@
                 <legend>Search in</legend>
                 <label><input type="checkbox" data-overall-search-type="hotels" checked> Hotels</label>
                 <label><input type="checkbox" data-overall-search-type="restaurants" checked> Restaurants</label>
+                <label><input type="checkbox" data-overall-search-type="vans" checked> Vans</label>
                 <label><input type="checkbox" data-overall-search-type="guides" checked> Guides</label>
               </fieldset>
               <div class="overall-global-filters" aria-label="Listing filters">
@@ -286,9 +330,30 @@
                     <input type="number" min="0" data-overall-filter="guide-max-price" placeholder="No maximum">
                   </label>
                 </fieldset>
+                <fieldset class="overall-global-filter" data-overall-filter-group="vans">
+                  <legend>Van filters</legend>
+                  <label>Vehicle type
+                    <select data-overall-filter="van-type">
+                      <option value="">Any vehicle type</option>
+                      {% for vehicle_type, vehicle_label in van_types %}<option value="{{ vehicle_type }}">{{ vehicle_label }}</option>{% endfor %}
+                    </select>
+                  </label>
+                  <label>Minimum booking charge per day (₹)
+                    <input type="number" min="0" step="0.01" data-overall-filter="van-min-daily-charge" placeholder="No minimum">
+                  </label>
+                  <label>Maximum booking charge per day (₹)
+                    <input type="number" min="0" step="0.01" data-overall-filter="van-max-daily-charge" placeholder="No maximum">
+                  </label>
+                  <label>Minimum charge per km (₹)
+                    <input type="number" min="0" step="0.01" data-overall-filter="van-min-per-km-charge" placeholder="No minimum">
+                  </label>
+                  <label>Maximum charge per km (₹)
+                    <input type="number" min="0" step="0.01" data-overall-filter="van-max-per-km-charge" placeholder="No maximum">
+                  </label>
+                </fieldset>
               </div>
               <div class="admin-overall-search-results" data-overall-location-results aria-live="polite">
-                Enter a location to find matching hotels, restaurants, and guides.
+                Enter a location to find matching hotels, restaurants, vans, and guides.
               </div>
             </div>
           </section>
@@ -368,6 +433,26 @@
           </form>
           <label class="listing-search"><span class="visually-hidden">Search restaurants</span><input type="search" data-listing-search="restaurants" placeholder="Search restaurants by name, location, PIN, or details"></label>
           <div class="admin-listing-list" data-listing-list="restaurants"></div>
+        </section>
+        <section class="admin-section" data-admin-section="vans" hidden>
+          <button class="admin-add" type="button" data-add-listing="vans">＋　Add a van</button>
+          <form class="admin-form listing-form" data-listing-form="vans" hidden>
+            <p class="required-fields-note"><span aria-hidden="true">*</span> Required fields</p>
+            <div class="form-field full"><label for="van-name">Provider / van name</label><input id="van-name" name="name" required maxlength="160"></div>
+            <div class="form-field"><label for="van-state">State</label><select id="van-state" name="state" data-location-state required><option value="" selected disabled>Select a state</option></select></div>
+            <div class="form-field"><label for="van-city">City</label><select id="van-city" name="city" data-location-city required disabled><option value="" selected disabled>Select a city</option></select><input name="city_other" data-location-city-other placeholder="Enter city" maxlength="100" required hidden disabled></div>
+            <div class="form-field full"><label for="van-pincode">PIN code</label><select id="van-pincode" name="postal_code" data-location-pincode required disabled><option value="" selected disabled>Select a city first</option></select><input name="postal_code_other" data-location-pincode-other type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit PIN code" required hidden disabled></div>
+            <div class="form-field full"><label for="van-contact">Contact info</label><input id="van-contact" name="contact_info" required maxlength="160"></div>
+            <div class="form-field full"><label for="van-address">Address</label><textarea id="van-address" name="address" required></textarea></div>
+            <div class="form-field"><label for="van-type">Vehicle type</label><select id="van-type" name="vehicle_type" required>{% for vehicle_type, vehicle_label in van_types %}<option value="{{ vehicle_type }}">{{ vehicle_label }}</option>{% endfor %}</select></div>
+            <div class="form-field"><label for="van-capacity">Seat capacity</label><input id="van-capacity" name="seat_capacity" type="number" min="1" max="30" required></div>
+            <div class="form-field"><label for="van-daily-charge">Booking charge (per day) ₹</label><input id="van-daily-charge" name="booking_charge_per_day" type="number" min="0" step="0.01" required></div>
+            <div class="form-field"><label for="van-per-km-charge">Charge per km ₹</label><input id="van-per-km-charge" name="per_km_charge" type="number" min="0" step="0.01" required></div>
+            <button class="button" type="submit">Save van</button>
+            <button class="button button-outline listing-cancel" type="button">Cancel</button>
+          </form>
+          <label class="listing-search"><span class="visually-hidden">Search vans</span><input type="search" data-listing-search="vans" placeholder="Search vans by name, location, PIN, vehicle type, or fare"></label>
+          <div class="admin-listing-list" data-listing-list="vans"></div>
         </section>
         <section class="admin-section" data-admin-section="guides" hidden>
           <button class="admin-add" type="button" data-add-listing="guides">＋　Add a guide</button>

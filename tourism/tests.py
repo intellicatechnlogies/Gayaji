@@ -11,7 +11,7 @@ from django.contrib.staticfiles import finders
 from django.contrib.auth.hashers import make_password
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import CommandError, call_command
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
 from PIL import Image
 
@@ -23,16 +23,21 @@ from .models import (
     GuideLanguage,
     Hotel,
     HotelLocation,
+    Inquiry,
+    NotificationOutbox,
     Place,
+    PlanningRequest,
     Restaurant,
     StoredCredential,
     StoredCredentialApiUser,
+    Van,
 )
 from .credential_vault import decrypt_credential, encrypt_credential
 from .management.commands.send_database_backup import (
     BACKUP_EMAIL,
     BACKUP_SUBJECT,
     database_backup,
+    _is_expired_backup,
     prune_old_backups,
 )
 from .backup_scheduler import (
@@ -40,7 +45,7 @@ from .backup_scheduler import (
     _try_acquire_process_lock,
     run_backup_scheduler,
 )
-from .views import hash_password, verify_password
+from .views import hash_password, send_booking_notification, verify_password
 
 
 class BootstrapDataCommandTests(TestCase):
@@ -117,7 +122,7 @@ class TourismApiTests(TestCase):
 
         fake_connection = FakeMailConnection()
         with (
-            patch("tourism.management.commands.send_database_backup.get_connection", return_value=fake_connection) as get_connection,
+            patch("tourism.email_utils.get_connection", return_value=fake_connection) as get_connection,
             patch(
                 "tourism.management.commands.send_database_backup.database_backup",
                 side_effect=lambda _source, destination: destination.write_bytes(b"sqlite backup"),
@@ -145,21 +150,84 @@ class TourismApiTests(TestCase):
         self.assertEqual(message.attachments[0].filename, "bodh_gaya_tourism.db")
         prune.assert_called_once_with(BACKUP_EMAIL, "testapppassword")
 
-    def test_backup_retention_permanently_keeps_two_newest_matching_messages_per_mailbox(self):
+    def test_booking_notification_uses_the_backup_smtp_credentials(self):
+        for name, value in {
+            "SMTP_Server": "smtp.gmail.com",
+            "Port": "587",
+            "App_Password": "test app password",
+        }.items():
+            StoredCredential.objects.create(
+                service="Email",
+                name=name,
+                encrypted_secret=encrypt_credential(value),
+            )
+
+        class FakeMailConnection:
+            def __init__(self):
+                self.messages = []
+                self.closed = False
+
+            def send_messages(self, messages):
+                self.messages.extend(messages)
+                return len(messages)
+
+            def close(self):
+                self.closed = True
+
+        fake_connection = FakeMailConnection()
+        with patch("tourism.email_utils.get_connection", return_value=fake_connection) as get_connection:
+            send_booking_notification(
+                {
+                    "booking_type": "guided",
+                    "name": "Traveler",
+                    "email": "traveler@example.com",
+                    "phone": "+911234567890",
+                    "destination": "Gaya, Rajgir",
+                    "travel_date": "2026-11-20",
+                    "guests": 2,
+                    "notes": "Morning visit",
+                }
+            )
+
+        get_connection.assert_called_once_with(
+            host="smtp.gmail.com",
+            port=587,
+            username=BACKUP_EMAIL,
+            password="testapppassword",
+            use_tls=True,
+            use_ssl=False,
+            timeout=20,
+        )
+        self.assertTrue(fake_connection.closed)
+        self.assertEqual(len(fake_connection.messages), 1)
+        email = fake_connection.messages[0]
+        self.assertEqual(email.to, [BACKUP_EMAIL])
+        self.assertIn("Destination: Gaya, Rajgir", email.body)
+        self.assertIn("Morning visit", email.body)
+
+    def test_backup_retention_keeps_matching_messages_from_last_48_hours(self):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+
+        def received(hours_ago):
+            return (now - timedelta(hours=hours_ago)).strftime("%d-%b-%Y %H:%M:%S %z")
+
         class FakeImap:
             def __init__(self):
                 self.selected_mailbox = ""
                 self.mailboxes = {
                     "INBOX": {
-                        b"1": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
-                        b"2": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
-                        b"3": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
-                        b"4": ("Other subject", BACKUP_EMAIL, BACKUP_EMAIL),
+                        b"1": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL, received(49)),
+                        b"2": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL, received(47)),
+                        b"3": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL, received(1)),
+                        b"4": ("Other subject", BACKUP_EMAIL, BACKUP_EMAIL, received(72)),
+                        b"5": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL, received(24)),
                     },
                     "[Gmail]/Sent Mail": {
-                        b"1": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
-                        b"2": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
-                        b"3": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL),
+                        b"1": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL, received(50)),
+                        b"2": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL, received(24)),
+                        b"3": (BACKUP_SUBJECT, BACKUP_EMAIL, BACKUP_EMAIL, received(47)),
                     },
                 }
                 self.deleted = {}
@@ -179,7 +247,7 @@ class TourismApiTests(TestCase):
                 if operation == "search":
                     return "OK", [b" ".join(mailbox)]
                 if operation == "fetch":
-                    subject, sender, recipient = mailbox[args[0]]
+                    subject, sender, recipient, internal_date = mailbox[args[0]]
                     headers = (
                         "\r\n".join(
                             (
@@ -191,7 +259,8 @@ class TourismApiTests(TestCase):
                             )
                         )
                     ).encode()
-                    return "OK", [(b"headers", headers)]
+                    metadata = f'INTERNALDATE "{internal_date}"'.encode()
+                    return "OK", [(metadata, headers)]
                 if operation == "store":
                     self.deleted.setdefault(self.selected_mailbox, []).append(args[0])
                     return "OK", []
@@ -212,8 +281,22 @@ class TourismApiTests(TestCase):
         self.assertEqual(deleted, 2)
         self.assertEqual(fake_imap.deleted["INBOX"], [b"1"])
         self.assertEqual(fake_imap.deleted["[Gmail]/Sent Mail"], [b"1"])
-        self.assertEqual(len(fake_imap.mailboxes["INBOX"]), 3)
+        self.assertEqual(len(fake_imap.mailboxes["INBOX"]), 4)
         self.assertEqual(len(fake_imap.mailboxes["[Gmail]/Sent Mail"]), 2)
+
+    def test_backup_retention_expires_only_messages_older_than_48_hours(self):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+        exactly_48_hours_old = (now - timedelta(hours=48)).strftime(
+            "%d-%b-%Y %H:%M:%S %z"
+        )
+        older_than_48_hours = (now - timedelta(hours=48, seconds=1)).strftime(
+            "%d-%b-%Y %H:%M:%S %z"
+        )
+
+        self.assertFalse(_is_expired_backup(exactly_48_hours_old, now))
+        self.assertTrue(_is_expired_backup(older_than_48_hours, now))
 
     def test_background_scheduler_sends_backup_and_waits_five_minutes(self):
         stop_event = type(
@@ -225,7 +308,7 @@ class TourismApiTests(TestCase):
             run_backup_scheduler(stop_event)
 
         send_backup.assert_called_once_with("send_database_backup")
-        self.assertEqual(BACKUP_INTERVAL_SECONDS, 600)
+        self.assertEqual(BACKUP_INTERVAL_SECONDS, 21600)
 
     def test_backup_scheduler_process_lock_allows_only_one_owner(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -249,6 +332,7 @@ class TourismApiTests(TestCase):
             ("127.0.0.1:8000", False),
             ("[::1]:8000", False),
             ("192.168.1.20:8000", False),
+            ("testserver", False),
             ("gayaji.example.com", True),
         )
         for host, should_start in cases:
@@ -258,6 +342,12 @@ class TourismApiTests(TestCase):
                 with patch("tourism.middleware.start_backup_scheduler") as start_scheduler:
                     middleware(request)
                 self.assertEqual(start_scheduler.called, should_start)
+
+    def test_collected_static_assets_are_served_when_debug_is_disabled(self):
+        response = self.client.get("/static/styles.css")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, ".hero{")
 
     def test_homepage_uses_django_template_and_renders_database_destinations(self):
         Place.objects.create(
@@ -272,11 +362,17 @@ class TourismApiTests(TestCase):
         self.assertContains(response, "Template destination")
         self.assertContains(response, 'id="admin-panel"')
         self.assertContains(response, 'id="booking-backdrop"')
+        self.assertContains(response, '/static/site.js?v=van-charge-ranges-1')
+        self.assertNotContains(response, "Tempo Traveller")
         self.assertContains(response, 'data-admin-tab="search">Search &amp; Filter</button>')
         self.assertContains(response, 'data-admin-tab="places">Manage Places</button>')
         self.assertContains(response, 'data-admin-tab="hotels">Manage Hotels</button>')
         self.assertContains(response, 'data-admin-tab="restaurants">Manage Restaurants</button>')
+        self.assertContains(response, 'data-admin-tab="vans">Manage Vans</button>')
         self.assertContains(response, 'data-admin-tab="guides">Manage Guides</button>')
+        self.assertContains(response, 'data-admin-tab="planning">Planning Requests</button>')
+        self.assertContains(response, 'id="planning-request-table"')
+        self.assertContains(response, 'id="planning-request-form"')
         self.assertNotContains(response, 'data-admin-tab="credentials"')
         self.assertNotContains(response, 'id="admin-credential-form"')
         self.assertContains(response, 'data-admin-section="search"')
@@ -285,27 +381,35 @@ class TourismApiTests(TestCase):
         self.assertContains(response, 'id="place-image" name="image" type="file"')
         self.assertContains(response, 'id="place-image" name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif" required')
         self.assertContains(response, 'id="place-description" name="description" required')
-        self.assertEqual(response.content.count(b'class="required-fields-note"'), 4)
+        self.assertEqual(response.content.count(b'class="required-fields-note"'), 5)
         self.assertContains(response, 'data-listing-form="hotels"')
         self.assertContains(response, 'id="hotel-website" name="website" type="url"')
         self.assertNotContains(response, 'id="hotel-website" name="website" type="url" maxlength="500" required')
         self.assertContains(response, '<select id="hotel-stars" name="star_rating" required>')
         self.assertContains(response, 'value="7">7 stars</option>')
         self.assertContains(response, 'data-listing-form="restaurants"')
+        self.assertContains(response, 'data-listing-form="vans"')
         self.assertContains(response, 'data-listing-form="guides"')
         self.assertContains(response, 'data-listing-search="hotels"')
         self.assertContains(response, 'data-overall-search-controls hidden')
         self.assertContains(response, 'data-listing-search="restaurants"')
+        self.assertContains(response, 'data-listing-search="vans"')
         self.assertContains(response, 'data-listing-search="guides"')
         self.assertContains(response, 'data-overall-location-search')
         self.assertContains(response, 'data-overall-search-type="hotels" checked')
         self.assertContains(response, 'data-overall-search-type="restaurants" checked')
+        self.assertContains(response, 'data-overall-search-type="vans" checked')
         self.assertContains(response, 'data-overall-search-type="guides" checked')
         self.assertContains(response, 'data-overall-filter="hotel-rating"')
         self.assertContains(response, 'data-overall-filter="hotel-ac"')
         self.assertContains(response, 'data-overall-filter="hotel-price-range"')
         self.assertContains(response, 'data-overall-filter="restaurant-food"')
         self.assertContains(response, 'data-overall-filter="restaurant-price"')
+        self.assertContains(response, 'data-overall-filter="van-type"')
+        self.assertContains(response, 'data-overall-filter="van-min-daily-charge"')
+        self.assertContains(response, 'data-overall-filter="van-max-daily-charge"')
+        self.assertContains(response, 'data-overall-filter="van-min-per-km-charge"')
+        self.assertContains(response, 'data-overall-filter="van-max-per-km-charge"')
         self.assertContains(response, 'data-guide-search-languages')
         self.assertContains(response, 'data-overall-filter="guide-min-price"')
         self.assertContains(response, 'data-overall-filter="guide-max-price"')
@@ -315,10 +419,31 @@ class TourismApiTests(TestCase):
         self.assertContains(response, 'value="Pali" data-guide-language')
         self.assertContains(response, 'value="Tibetan" data-guide-language')
         self.assertContains(response, 'data-guide-language-other')
+        self.assertContains(response, 'class="booking-destination-dropdown"')
+        self.assertEqual(response.content.count(b'name="destination" value='), 4)
+        self.assertContains(response, 'name="booking_type" value="complete-trip"')
+        self.assertEqual(response.content.count(b'name="booking_type" value='), 4)
+        self.assertEqual(response.content.count(b'name="arrangements" value='), 5)
 
     def test_static_assets_are_discoverable_for_collectstatic(self):
         self.assertIsNotNone(finders.find("styles.css"))
         self.assertIsNotNone(finders.find("site.js"))
+
+    def test_whitenoise_serves_static_assets_without_collectstatic_when_debug_is_disabled(self):
+        from whitenoise.middleware import WhiteNoiseMiddleware
+
+        with tempfile.TemporaryDirectory() as static_root:
+            with override_settings(
+                DEBUG=False,
+                STATIC_ROOT=static_root,
+                WHITENOISE_USE_FINDERS=True,
+                WHITENOISE_AUTOREFRESH=False,
+            ):
+                middleware = WhiteNoiseMiddleware(lambda _request: None)
+                response = middleware(RequestFactory().get("/static/styles.css"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response["Content-Type"].startswith("text/css"))
 
     def test_admin_page_renders_full_page_admin_view(self):
         response = self.client.get("/admin/")
@@ -628,7 +753,7 @@ class TourismApiTests(TestCase):
         self.assertEqual(response["WWW-Authenticate"], 'Basic realm="Stored credentials API"')
 
     @patch("tourism.views.fetch_location_pincodes", return_value=["823001", "800001"])
-    def test_admin_can_create_list_and_remove_hotels_restaurants_and_guides(self, _mock_pincodes):
+    def test_admin_can_create_list_and_remove_hotels_restaurants_vans_and_guides(self, _mock_pincodes):
         examples = (
             (
                 "hotels",
@@ -683,6 +808,22 @@ class TourismApiTests(TestCase):
                     "price": "1500.00",
                 },
             ),
+            (
+                "vans",
+                Van,
+                {
+                    "name": "Bodh Gaya Van Service",
+                    "state": "Bihar",
+                    "city": "Gaya",
+                    "postal_code": "823001",
+                    "contact_info": "+91 9876543210",
+                    "address": "Temple Road, Bodh Gaya",
+                    "vehicle_type": "AC Van",
+                    "seat_capacity": 12,
+                    "booking_charge_per_day": "3000.00",
+                    "per_km_charge": "15.00",
+                },
+            ),
         )
         for listing_type, model, payload in examples:
             with self.subTest(listing_type=listing_type):
@@ -709,6 +850,10 @@ class TourismApiTests(TestCase):
                 listed = self.client.get(endpoint)
                 self.assertEqual(listed.status_code, 200)
                 self.assertEqual(listed.json()[0]["name"], payload["name"])
+                if listing_type == "vans":
+                    self.assertEqual(listed.json()[0]["booking_charge_per_day"], "3000.00")
+                    self.assertEqual(listed.json()[0]["per_km_charge"], "15.00")
+                    self.assertNotIn("price_range", listed.json()[0])
                 if listing_type == "hotels":
                     self.assertEqual(len(listed.json()[0]["locations"]), 2)
                     self.assertEqual(
@@ -719,6 +864,39 @@ class TourismApiTests(TestCase):
                 self.assertEqual(deleted.status_code, 204)
                 self.assertFalse(model.objects.exists())
                 self.client.post("/api/admin/logout")
+
+    def test_van_api_rejects_tempo_traveller_and_missing_charge(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        van = {
+            "name": "Van Service",
+            "state": "Bihar",
+            "city": "Gaya",
+            "postal_code": "823001",
+            "contact_info": "+91 9876543210",
+            "address": "Temple Road",
+            "vehicle_type": "AC Van",
+            "seat_capacity": 8,
+            "booking_charge_per_day": "3000",
+            "per_km_charge": "15",
+        }
+        invalid_type = self.client.post(
+            "/api/admin/listings/vans",
+            data=json.dumps({**van, "vehicle_type": "Tempo Traveller"}),
+            content_type="application/json",
+        )
+        self.assertEqual(invalid_type.status_code, 422)
+
+        missing_charge = self.client.post(
+            "/api/admin/listings/vans",
+            data=json.dumps({key: value for key, value in van.items() if key != "per_km_charge"}),
+            content_type="application/json",
+        )
+        self.assertEqual(missing_charge.status_code, 422)
+        self.assertFalse(Van.objects.exists())
 
     @patch("tourism.views.fetch_location_pincodes", return_value=["823001"])
     def test_hotel_website_is_optional_and_returned_by_api(self, _mock_pincodes):
@@ -1045,7 +1223,7 @@ class TourismApiTests(TestCase):
         self.assertEqual([place["name"] for place in places.json()], ["Nalanda test"])
 
         booking = {
-            "booking_type": "cab",
+            "booking_type": ["complete-trip", "cab", "guided"],
             "name": "Traveler",
             "email": "traveler@example.com",
             "phone": "+911234567890",
@@ -1053,20 +1231,78 @@ class TourismApiTests(TestCase):
             "travel_date": "2026-11-20",
             "guests": 2,
         }
-        response = self.client.post("/api/bookings", data=json.dumps(booking), content_type="application/json")
+        booking["destination"] = ["Gaya", "Rajgir"]
+        with patch("tourism.views.queue_notification_email") as queue_notification:
+            response = self.client.post("/api/bookings", data=json.dumps(booking), content_type="application/json")
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["booking_type"], "cab")
+        self.assertEqual(response.json()["booking_type"], "complete-trip, cab, guided")
+        self.assertEqual(response.json()["destination"], "Gaya, Rajgir")
+        self.assertEqual(Booking.objects.get().destination, "Gaya, Rajgir")
+        queue_notification.assert_called_once()
+        self.assertIn("Destination: Gaya, Rajgir", queue_notification.call_args.args[1])
+        self.assertIn("Plan my complete trip, Cab / private van, Guided visit", queue_notification.call_args.args[1])
         self.assertEqual(Booking.objects.count(), 1)
+        planned = PlanningRequest.objects.get()
+        self.assertEqual(planned.request_type, "trip")
+        self.assertEqual(planned.services, "Plan my complete trip, Cab / private van, Guided visit")
+        self.assertEqual(planned.destinations, "Gaya, Rajgir")
+        self.assertEqual(planned.guests, 2)
+
+    def test_booking_with_all_services_fits_database_field(self):
+        booking = {
+            "booking_type": ["complete-trip", "hotel", "cab", "guided"],
+            "name": "Traveler",
+            "email": "traveler@example.com",
+            "phone": "+911234567890",
+            "destination": ["Bodh Gaya", "Gaya", "Nalanda", "Rajgir"],
+            "travel_date": "2026-10-29",
+            "guests": 2,
+            "notes": "this is test",
+        }
+        with patch("tourism.views.queue_notification_email") as queue_notification:
+            response = self.client.post(
+                "/api/bookings",
+                data=json.dumps(booking),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            Booking.objects.get().booking_type,
+            "complete-trip, hotel, cab, guided",
+        )
+        self.assertIn("Bodh Gaya, Gaya, Nalanda, Rajgir", queue_notification.call_args.args[1])
+
+    def test_booking_is_not_saved_when_notification_cannot_be_queued(self):
+        booking = {
+            "booking_type": "cab",
+            "name": "Traveler",
+            "email": "traveler@example.com",
+            "phone": "+911234567890",
+            "destination": ["Gaya"],
+            "travel_date": "2026-11-20",
+            "guests": 2,
+        }
+        with patch(
+            "tourism.views.queue_notification_email",
+            side_effect=CommandError("Email queue is unavailable."),
+        ):
+            response = self.client.post("/api/bookings", data=json.dumps(booking), content_type="application/json")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(Booking.objects.count(), 0)
+        self.assertEqual(PlanningRequest.objects.count(), 0)
 
     def test_invalid_email_and_booking_type_are_rejected(self):
         inquiry = {"name": "Traveler", "email": "not-an-email", "message": "A sufficiently long inquiry message."}
+        inquiry["arrangements"] = ["complete-trip"]
         response = self.client.post("/api/inquiries", data=json.dumps(inquiry), content_type="application/json")
         self.assertEqual(response.status_code, 422)
 
         inquiry["email"] = "traveler@example.com"
         response = self.client.post("/api/inquiries", data=json.dumps(inquiry), content_type="application/json")
         self.assertEqual(response.status_code, 201)
-        self.assertFalse(response.json()["email_sent"])
+        self.assertTrue(response.json()["email_queued"])
 
         booking = {
             "booking_type": "plane",
@@ -1078,3 +1314,141 @@ class TourismApiTests(TestCase):
         }
         response = self.client.post("/api/bookings", data=json.dumps(booking), content_type="application/json")
         self.assertEqual(response.status_code, 422)
+
+    def test_contact_inquiry_emails_arrangements_using_shared_smtp(self):
+        inquiry = {
+            "name": "Traveler",
+            "email": "traveler@example.com",
+            "arrangements": ["accommodation", "guided-visits"],
+            "message": "Please help plan my visit.",
+        }
+        with patch("tourism.views.queue_notification_email") as queue_notification:
+            response = self.client.post(
+                "/api/inquiries",
+                data=json.dumps(inquiry),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()["email_queued"])
+        queue_notification.assert_called_once()
+        subject, body = queue_notification.call_args.args
+        self.assertIn("Traveler", subject)
+        self.assertIn("Accommodation / stay", body)
+        self.assertIn("Guided visits and tours", body)
+        self.assertIn("Please help plan my visit.", body)
+        self.assertIn("Guided visits and tours", Inquiry.objects.get().message)
+        planned = PlanningRequest.objects.get()
+        self.assertEqual(planned.request_type, "inquiry")
+        self.assertEqual(planned.arrangements, "Accommodation / stay, Guided visits and tours")
+        self.assertEqual(planned.message, inquiry["message"])
+
+    def test_contact_inquiry_reports_smtp_failure_without_false_success(self):
+        inquiry = {
+            "name": "Traveler",
+            "email": "traveler@example.com",
+            "arrangements": ["complete-trip"],
+            "message": "Please help plan my visit.",
+        }
+        with patch(
+            "tourism.views.queue_notification_email",
+            side_effect=CommandError("Email queue is unavailable."),
+        ):
+            response = self.client.post(
+                "/api/inquiries",
+                data=json.dumps(inquiry),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(Inquiry.objects.count(), 0)
+        self.assertEqual(PlanningRequest.objects.count(), 0)
+
+    def test_notification_delivery_runs_in_background_and_updates_outbox(self):
+        with (
+            patch("tourism.email_utils.send_notification_email") as send_email,
+            patch("tourism.email_utils.threading.Thread") as thread,
+        ):
+            from tourism.email_utils import _deliver_notification, queue_notification_email
+
+            thread.return_value.start.side_effect = lambda: _deliver_notification(
+                thread.call_args.kwargs["args"][0]
+            )
+            with self.captureOnCommitCallbacks(execute=True):
+                queued = queue_notification_email("Queued notification", "Queued body.")
+            self.assertEqual(queued.status, NotificationOutbox.Status.QUEUED)
+            thread.return_value.start.assert_called_once()
+            send_email.assert_called_once_with("Queued notification", "Queued body.")
+        queued.refresh_from_db()
+        self.assertEqual(queued.status, NotificationOutbox.Status.SENT)
+        self.assertIsNotNone(queued.sent_at)
+
+    def test_notification_delivery_records_smtp_failure_without_blocking_request(self):
+        notification = NotificationOutbox.objects.create(
+            subject="Failed notification",
+            body="A test message.",
+        )
+        from tourism.email_utils import _deliver_notification
+
+        with patch(
+            "tourism.email_utils.send_notification_email",
+            side_effect=CommandError("SMTP is unavailable."),
+        ):
+            _deliver_notification(notification.id)
+
+        notification.refresh_from_db()
+        self.assertEqual(notification.status, NotificationOutbox.Status.FAILED)
+        self.assertEqual(notification.error, "SMTP is unavailable.")
+
+    def test_planning_requests_admin_api_lists_updates_and_deletes_records(self):
+        planning_request = PlanningRequest.objects.create(
+            request_type="trip",
+            name="Traveler",
+            email="traveler@example.com",
+            phone="+911234567890",
+            services="Cab / private van",
+            destinations="Gaya",
+            travel_date="2026-11-20",
+            guests=2,
+            message="Morning visit",
+        )
+        self.assertEqual(self.client.get("/api/admin/planning-requests").status_code, 401)
+        self.assertEqual(
+            self.client.patch(
+                f"/api/admin/planning-requests/{planning_request.id}",
+                data=json.dumps({"name": "Updated traveler"}),
+                content_type="application/json",
+            ).status_code,
+            401,
+        )
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+
+        listing = self.client.get("/api/admin/planning-requests")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()[0]["id"], planning_request.id)
+        self.assertEqual(listing.json()[0]["services"], "Cab / private van")
+
+        updated = self.client.patch(
+            f"/api/admin/planning-requests/{planning_request.id}",
+            data=json.dumps({"name": "Updated traveler", "guests": 3}),
+            content_type="application/json",
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["name"], "Updated traveler")
+        self.assertEqual(updated.json()["guests"], 3)
+
+        invalid = self.client.patch(
+            f"/api/admin/planning-requests/{planning_request.id}",
+            data=json.dumps({"email": "not-an-email"}),
+            content_type="application/json",
+        )
+        self.assertEqual(invalid.status_code, 422)
+        self.assertEqual(
+            self.client.delete(f"/api/admin/planning-requests/{planning_request.id}").status_code,
+            204,
+        )
+        self.assertFalse(PlanningRequest.objects.exists())

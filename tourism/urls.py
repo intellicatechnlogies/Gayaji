@@ -16,6 +16,12 @@ urlpatterns = [
     path("bookings/<str:booking_type>", views.create_typed_booking, name="typed-bookings"),
     path("admin/inquiries", views.admin_inquiries, name="admin-inquiries"),
     path("admin/bookings", views.admin_bookings, name="admin-bookings"),
+    path("admin/planning-requests", views.admin_planning_requests, name="admin-planning-requests"),
+    path(
+        "admin/planning-requests/<int:request_id>",
+        views.admin_planning_request_detail,
+        name="admin-planning-request-detail",
+    ),
     path("admin/credentials", views.admin_credentials, name="admin-credentials"),
     path("stored-credentials", views.stored_credentials_api, name="stored-credentials-api"),
     path(
