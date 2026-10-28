@@ -6,7 +6,6 @@ from django.db.models.functions import Lower
 class Place(models.Model):
     name = models.CharField(max_length=160, db_index=True)
     description = models.TextField()
-    image = models.CharField(max_length=1000)
     region = models.CharField(max_length=100, default="Bodh Gaya")
     category = models.CharField(max_length=100, default="Heritage")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -86,6 +85,29 @@ class GuideLanguage(models.Model):
         constraints = [
             models.UniqueConstraint(Lower("name"), name="unique_guide_language_ci")
         ]
+
+
+class StoredCredential(models.Model):
+    service = models.CharField(max_length=100)
+    name = models.CharField(max_length=120)
+    encrypted_secret = models.TextField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "stored_credentials"
+        ordering = ("service", "name")
+        constraints = [
+            models.UniqueConstraint(fields=("service", "name"), name="unique_stored_credential_name")
+        ]
+
+
+class StoredCredentialApiUser(models.Model):
+    username = models.CharField(max_length=80, unique=True)
+    password_hash = models.CharField(max_length=256)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "stored_credential_api_users"
 
 
 class Hotel(models.Model):

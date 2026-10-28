@@ -12,6 +12,10 @@
   const placeList = document.getElementById('admin-place-list');
   const stateCities = JSON.parse(document.getElementById('state-city-data').textContent);
   const adminListingData = { hotels: [], restaurants: [], guides: [] };
+  const adminSectionStorageKey = 'beyondAdminSection';
+  document.querySelectorAll('[data-place-image]').forEach((image) => {
+    image.addEventListener('error', () => { image.hidden = true; }, { once: true });
+  });
   let language = 'en';
   let slide = 0;
   let toastTimer;
@@ -45,17 +49,6 @@
       listingSaved: 'जानकारी सहेजी गई।', listingRemoved: 'जानकारी हटा दी गई।',
     },
   };
-  const destinationImages = {
-    'Mahabodhi Temple': heroes[0].image,
-    'The Great Buddha Statue': 'https://thumb.wikimedia.org/wikipedia/commons/thumb/b/bf/Great_Buddha_Statue%2C_Bodh_Gaya_at_Sunset.jpg/1280px-Great_Buddha_Statue%2C_Bodh_Gaya_at_Sunset.jpg',
-    'Vishnupad Temple': heroes[3].image,
-    'Nalanda Mahavihara': heroes[1].image,
-    'Nalanda Archaeological Museum': heroes[1].image,
-    'Rajgir Ropeway & Vishwa Shanti Stupa': heroes[2].image,
-    'Griddhakuta Hill': 'https://thumb.wikimedia.org/wikipedia/commons/thumb/d/db/Cyclopian_wall%2C_Rajgir._%285457385482%29_%28cropped%29.jpg/1280px-Cyclopian_wall%2C_Rajgir._%285457385482%29_%28cropped%29.jpg',
-    'Barabar Caves': 'https://thumb.wikimedia.org/wikipedia/commons/thumb/2/25/Lomas_Rishi_entrance.jpg/1280px-Lomas_Rishi_entrance.jpg',
-  };
-
   function text(key) {
     return translations[language][key] || translations.en[key] || key;
   }
@@ -166,9 +159,13 @@
   if (isAdminPage) setAdminOpen(true);
 
   async function apiRequest(path, options = {}) {
+    const headers = { ...(options.headers || {}) };
+    if (options.body && !(options.body instanceof FormData)) {
+      headers['Content-Type'] = 'application/json';
+    }
     const response = await fetch(path, {
       ...options,
-      headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) },
+      headers,
     });
     if (!response.ok) {
       let detail = '';
@@ -227,6 +224,7 @@
       const credentials = Object.fromEntries(new FormData(loginForm));
       await apiRequest('/api/admin/login', { method: 'POST', body: JSON.stringify(credentials) });
       loginForm.reset();
+      sessionStorage.removeItem(adminSectionStorageKey);
       window.location.assign('/admin/');
     } catch (error) {
       showLoginError(error.message || text('loginError'));
@@ -239,6 +237,7 @@
   document.getElementById('admin-logout').addEventListener('click', async () => {
     try {
       await apiRequest('/api/admin/logout', { method: 'POST' });
+      sessionStorage.removeItem(adminSectionStorageKey);
       if (isAdminPage) {
         window.location.assign('/');
         return;
@@ -258,6 +257,7 @@
     const image = document.createElement('img');
     image.src = place.image;
     image.alt = '';
+    image.addEventListener('error', () => { image.hidden = true; }, { once: true });
     const info = document.createElement('div');
     info.className = 'admin-row-info';
     const name = document.createElement('strong');
@@ -283,11 +283,59 @@
   }
 
   async function refreshPlaces() {
-    const places = (await apiRequest('/api/places')).map((place) => ({
-      ...place,
-      image: destinationImages[place.name] || place.image,
-    }));
+    const places = await apiRequest('/api/places');
     placeList.replaceChildren(...places.map(createAdminRow));
+  }
+
+  async function refreshStoredCredentials() {
+    const list = document.getElementById('admin-credential-list');
+    const credentials = await apiRequest('/api/admin/credentials');
+    if (!credentials.length) {
+      list.classList.add('admin-table-empty');
+      list.textContent = 'No credentials stored.';
+      return;
+    }
+    list.classList.remove('admin-table-empty');
+    const table = document.createElement('table');
+    table.className = 'admin-table';
+    const head = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    ['Service', 'Credential name', 'Last updated', 'Actions'].forEach((headingText) => {
+      const heading = document.createElement('th');
+      heading.scope = 'col';
+      heading.textContent = headingText;
+      headerRow.append(heading);
+    });
+    head.append(headerRow);
+    const body = document.createElement('tbody');
+    credentials.forEach((credential) => {
+      const row = document.createElement('tr');
+      [credential.service, credential.name, new Date(credential.updated_at).toLocaleString()].forEach((value) => {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.append(cell);
+      });
+      const actions = document.createElement('td');
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'admin-table-delete';
+      remove.textContent = 'Delete';
+      remove.addEventListener('click', async () => {
+        if (!window.confirm(`Delete ${credential.service} credential "${credential.name}"?`)) return;
+        try {
+          await apiRequest(`/api/admin/credentials/${credential.id}`, { method: 'DELETE' });
+          await refreshStoredCredentials();
+          showToast('Credential deleted.');
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      });
+      actions.append(remove);
+      row.append(actions);
+      body.append(row);
+    });
+    table.append(head, body);
+    list.replaceChildren(table);
   }
 
   async function refreshAdminData() {
@@ -629,11 +677,43 @@
   document.querySelectorAll('[data-admin-tab]').forEach((button) => {
     button.addEventListener('click', async () => {
       const section = button.dataset.adminTab;
+      sessionStorage.setItem(adminSectionStorageKey, section);
       document.querySelectorAll('[data-admin-tab]').forEach((tab) => tab.classList.toggle('active', tab === button));
       document.querySelectorAll('[data-admin-section]').forEach((pane) => {
         pane.hidden = pane.dataset.adminSection !== section;
       });
+      if (section === 'credentials') {
+        try {
+          await refreshStoredCredentials();
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      }
     });
+  });
+  if (isAdminPage) {
+    const savedSection = sessionStorage.getItem(adminSectionStorageKey);
+    const savedTab = [...document.querySelectorAll('[data-admin-tab]')]
+      .find((button) => button.dataset.adminTab === savedSection);
+    if (savedTab) savedTab.click();
+  }
+
+  document.getElementById('admin-credential-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const payload = Object.fromEntries(new FormData(form));
+      await apiRequest('/api/admin/credentials', { method: 'POST', body: JSON.stringify(payload) });
+      form.reset();
+      await refreshStoredCredentials();
+      showToast('Credential encrypted and saved.');
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
   });
 
   document.querySelectorAll('[data-add-listing]').forEach((button) => {
@@ -916,15 +996,17 @@
   document.getElementById('admin-add-place').addEventListener('click', () => {
     editingId = null;
     placeForm.reset();
+    placeForm.elements.image.required = true;
     placeForm.hidden = false;
     document.getElementById('place-region').value = 'Bodh Gaya';
   });
 
   function startEdit(place) {
     editingId = place.id;
-    for (const field of ['name', 'description', 'image', 'region', 'category']) {
+    for (const field of ['name', 'description', 'region', 'category']) {
       placeForm.elements[field].value = place[field];
     }
+    placeForm.elements.image.required = false;
     placeForm.hidden = false;
     placeForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
@@ -932,17 +1014,18 @@
   document.getElementById('admin-cancel-edit').addEventListener('click', () => {
     editingId = null;
     placeForm.reset();
+    placeForm.elements.image.required = true;
     placeForm.hidden = true;
   });
 
   placeForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const payload = Object.fromEntries(new FormData(placeForm));
     const path = editingId ? `/api/places/${editingId}` : '/api/places';
     try {
-      await apiRequest(path, { method: editingId ? 'PATCH' : 'POST', body: JSON.stringify(payload) });
+      await apiRequest(path, { method: editingId ? 'PATCH' : 'POST', body: new FormData(placeForm) });
       editingId = null;
       placeForm.reset();
+      placeForm.elements.image.required = true;
       placeForm.hidden = true;
       await refreshPlaces();
       showToast(text('placeSaved'));
