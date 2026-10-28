@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hashlib
 import json
 import secrets
@@ -9,6 +11,7 @@ from urllib.parse import quote
 from urllib.request import urlopen
 
 from django.conf import settings
+from django.contrib.auth.hashers import check_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
@@ -34,7 +37,11 @@ from .models import (
     Inquiry,
     Place,
     Restaurant,
+    StoredCredential,
+    StoredCredentialApiUser,
 )
+from .credential_vault import decrypt_credential, encrypt_credential
+from cryptography.fernet import InvalidToken
 
 ADMIN_SESSION_COOKIE = "beyond_admin_session"
 ADMIN_SESSION_DURATION = timedelta(hours=12)
@@ -580,6 +587,155 @@ def admin_bookings(request: HttpRequest) -> JsonResponse:
         ],
         safe=False,
     )
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def admin_credentials(request: HttpRequest) -> JsonResponse:
+    if current_admin(request) is None:
+        return unauthorized()
+    if request.method == "GET":
+        return JsonResponse(
+            [
+                {
+                    "id": item.id,
+                    "service": item.service,
+                    "name": item.name,
+                    "updated_at": item.updated_at.isoformat(),
+                }
+                for item in StoredCredential.objects.all()
+            ],
+            safe=False,
+        )
+
+    data, error = json_body(request)
+    if error:
+        return error
+    if set(data) != {"service", "name", "secret"}:
+        return JsonResponse({"detail": "Provide service, credential name and secret."}, status=422)
+    service = data.get("service")
+    name = data.get("name")
+    secret = data.get("secret")
+    if not isinstance(service, str) or not service.strip() or len(service.strip()) > 100:
+        return JsonResponse({"detail": {"service": "Enter a service name of up to 100 characters."}}, status=422)
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
+        return JsonResponse({"detail": {"name": "Enter a credential name of up to 120 characters."}}, status=422)
+    if not isinstance(secret, str) or not secret.strip() or len(secret) > 10000:
+        return JsonResponse({"detail": {"secret": "Enter a non-empty secret of up to 10000 characters."}}, status=422)
+    encrypted_secret = encrypt_credential(secret)
+    credential, _ = StoredCredential.objects.update_or_create(
+        service=service.strip(),
+        name=name.strip(),
+        defaults={"encrypted_secret": encrypted_secret},
+    )
+    return JsonResponse(
+        {
+            "id": credential.id,
+            "service": credential.service,
+            "name": credential.name,
+            "updated_at": credential.updated_at.isoformat(),
+        },
+        status=201,
+    )
+
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def admin_credential_detail(request: HttpRequest, credential_id: int) -> HttpResponse:
+    if current_admin(request) is None:
+        return unauthorized()
+    deleted, _ = StoredCredential.objects.filter(id=credential_id).delete()
+    return HttpResponse(status=204 if deleted else 404)
+
+
+def stored_credentials_api_user(request: HttpRequest) -> StoredCredentialApiUser | None:
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, encoded_credentials = authorization.partition(" ")
+    if scheme.lower() != "basic" or not encoded_credentials:
+        return None
+    try:
+        decoded_credentials = base64.b64decode(encoded_credentials, validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return None
+    username, separator, password = decoded_credentials.partition(":")
+    if not separator:
+        return None
+    api_user = StoredCredentialApiUser.objects.filter(username=username).first()
+    if api_user is None or not check_password(password, api_user.password_hash):
+        return None
+    return api_user
+
+
+def stored_credentials_api_unauthorized() -> JsonResponse:
+    response = JsonResponse({"detail": "Valid API Basic credentials are required."}, status=401)
+    response["WWW-Authenticate"] = 'Basic realm="Stored credentials API"'
+    return response
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def stored_credentials_api(request: HttpRequest) -> JsonResponse:
+    if stored_credentials_api_user(request) is None:
+        return stored_credentials_api_unauthorized()
+
+    if request.method == "GET":
+        credentials = StoredCredential.objects.all()
+        service = request.GET.get("service")
+        if service:
+            credentials = credentials.filter(service__iexact=service)
+        try:
+            values = [
+                {
+                    "id": item.id,
+                    "service": item.service,
+                    "name": item.name,
+                    "value": decrypt_credential(item.encrypted_secret),
+                    "updated_at": item.updated_at.isoformat(timespec="seconds"),
+                }
+                for item in credentials
+            ]
+        except (InvalidToken, UnicodeDecodeError) as exc:
+            return JsonResponse({"detail": f"Stored credentials could not be decrypted: {exc}"}, status=503)
+        return JsonResponse(values, safe=False)
+
+    data, error = json_body(request)
+    if error:
+        return error
+    if set(data) != {"service", "name", "value"}:
+        return JsonResponse({"detail": "Provide service, credential name and plaintext value."}, status=422)
+    service = data.get("service")
+    name = data.get("name")
+    value = data.get("value")
+    if not isinstance(service, str) or not service.strip() or len(service.strip()) > 100:
+        return JsonResponse({"detail": {"service": "Enter a service name of up to 100 characters."}}, status=422)
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
+        return JsonResponse({"detail": {"name": "Enter a credential name of up to 120 characters."}}, status=422)
+    if not isinstance(value, str) or not value.strip() or len(value) > 10000:
+        return JsonResponse({"detail": {"value": "Enter a non-empty plaintext value of up to 10000 characters."}}, status=422)
+    encrypted_secret = encrypt_credential(value)
+    credential, _ = StoredCredential.objects.update_or_create(
+        service=service.strip(),
+        name=name.strip(),
+        defaults={"encrypted_secret": encrypted_secret},
+    )
+    return JsonResponse(
+        {
+            "id": credential.id,
+            "service": credential.service,
+            "name": credential.name,
+            "updated_at": credential.updated_at.isoformat(timespec="seconds"),
+        },
+        status=201,
+    )
+
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def stored_credentials_api_detail(request: HttpRequest, credential_id: int) -> HttpResponse:
+    if stored_credentials_api_user(request) is None:
+        return stored_credentials_api_unauthorized()
+    deleted, _ = StoredCredential.objects.filter(id=credential_id).delete()
+    return HttpResponse(status=204 if deleted else 404)
 
 
 @csrf_exempt

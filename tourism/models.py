@@ -88,6 +88,29 @@ class GuideLanguage(models.Model):
         ]
 
 
+class StoredCredential(models.Model):
+    service = models.CharField(max_length=100)
+    name = models.CharField(max_length=120)
+    encrypted_secret = models.TextField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "stored_credentials"
+        ordering = ("service", "name")
+        constraints = [
+            models.UniqueConstraint(fields=("service", "name"), name="unique_stored_credential_name")
+        ]
+
+
+class StoredCredentialApiUser(models.Model):
+    username = models.CharField(max_length=80, unique=True)
+    password_hash = models.CharField(max_length=256)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "stored_credential_api_users"
+
+
 class Hotel(models.Model):
     name = models.CharField(max_length=160)
     website = models.URLField(max_length=500, blank=True)

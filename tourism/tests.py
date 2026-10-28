@@ -1,12 +1,27 @@
+import base64
 import json
 from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.staticfiles import finders
+from django.contrib.auth.hashers import make_password
 from django.core.management import CommandError, call_command
 from django.test import TestCase
 
-from .models import AdminAccount, Booking, CityPincode, Guide, GuideLanguage, Hotel, HotelLocation, Place, Restaurant
+from .models import (
+    AdminAccount,
+    Booking,
+    CityPincode,
+    Guide,
+    GuideLanguage,
+    Hotel,
+    HotelLocation,
+    Place,
+    Restaurant,
+    StoredCredential,
+    StoredCredentialApiUser,
+)
+from .credential_vault import decrypt_credential
 from .views import hash_password, verify_password
 
 
@@ -63,6 +78,10 @@ class TourismApiTests(TestCase):
         self.assertContains(response, 'data-admin-tab="hotels">Manage Hotels</button>')
         self.assertContains(response, 'data-admin-tab="restaurants">Manage Restaurants</button>')
         self.assertContains(response, 'data-admin-tab="guides">Manage Guides</button>')
+        self.assertContains(response, 'data-admin-tab="credentials">Credentials</button>')
+        self.assertContains(response, 'id="credential-service" name="service"')
+        self.assertContains(response, 'id="credential-name" name="name"')
+        self.assertContains(response, 'id="credential-secret" name="secret" type="password"')
         self.assertContains(response, 'data-admin-section="search"')
         self.assertContains(response, 'id="place-region" name="region" required')
         self.assertContains(response, 'id="place-category" name="category" required')
@@ -176,6 +195,148 @@ class TourismApiTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 401)
+
+    def test_credentials_require_admin_and_are_encrypted_and_never_returned(self):
+        secret = "sample-secret-value"
+        payload = {"service": "AWS", "name": "Secret access key", "secret": secret}
+        self.assertEqual(self.client.get("/api/admin/credentials").status_code, 401)
+        self.assertEqual(
+            self.client.post(
+                "/api/admin/credentials",
+                data=json.dumps(payload),
+                content_type="application/json",
+            ).status_code,
+            401,
+        )
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        with self.settings(SECRET_KEY="test-django-secret-key"):
+            response = self.client.post(
+                "/api/admin/credentials",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 201)
+            self.assertNotIn("secret", response.json())
+            stored = StoredCredential.objects.get(service="AWS", name="Secret access key")
+            self.assertNotEqual(stored.encrypted_secret, secret)
+            self.assertEqual(decrypt_credential(stored.encrypted_secret), secret)
+
+            listing = self.client.get("/api/admin/credentials")
+            self.assertEqual(listing.status_code, 200)
+            self.assertEqual(len(listing.json()), 1)
+            self.assertNotIn("secret", listing.json()[0])
+            self.assertNotIn("encrypted_secret", listing.json()[0])
+
+            updated = self.client.post(
+                "/api/admin/credentials",
+                data=json.dumps({**payload, "secret": "rotated-secret"}),
+                content_type="application/json",
+            )
+            self.assertEqual(updated.status_code, 201)
+            self.assertEqual(StoredCredential.objects.count(), 1)
+            self.assertEqual(
+                decrypt_credential(StoredCredential.objects.get().encrypted_secret),
+                "rotated-secret",
+            )
+            self.assertEqual(self.client.delete(f"/api/admin/credentials/{stored.id}").status_code, 204)
+            self.assertFalse(StoredCredential.objects.exists())
+
+    def test_credentials_use_django_secret_key_without_extra_encryption_setting(self):
+        self.client.post(
+            "/api/admin/login",
+            data=json.dumps({"username": "admin", "password": "test-password-long-enough"}),
+            content_type="application/json",
+        )
+        response = self.client.post(
+            "/api/admin/credentials",
+            data=json.dumps({"service": "AWS", "name": "Access key ID", "secret": "value"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        stored = StoredCredential.objects.get()
+        self.assertNotEqual(stored.encrypted_secret, "value")
+        self.assertEqual(decrypt_credential(stored.encrypted_secret), "value")
+
+    def test_stored_credentials_api_authenticates_and_decrypts_on_read(self):
+        api_username = "credentials-client"
+        api_password = "client-password"
+        StoredCredentialApiUser.objects.create(
+            username=api_username,
+            password_hash=make_password(api_password),
+        )
+        basic_token = base64.b64encode(f"{api_username}:{api_password}".encode()).decode("ascii")
+        headers = {"HTTP_AUTHORIZATION": f"Basic {basic_token}"}
+        payload = {"service": "AWS", "name": "Access key", "value": "plain-input-secret"}
+
+        self.assertEqual(self.client.get("/api/stored-credentials").status_code, 401)
+        with self.settings(SECRET_KEY="test-django-secret-key"):
+            encrypted_field_payload = {
+                "service": "AWS",
+                "name": "Access key",
+                "secret": "this API field is not accepted",
+            }
+            rejected = self.client.post(
+                "/api/stored-credentials",
+                data=json.dumps(encrypted_field_payload),
+                content_type="application/json",
+                **headers,
+            )
+            self.assertEqual(rejected.status_code, 422)
+
+            created = self.client.post(
+                "/api/stored-credentials",
+                data=json.dumps(payload),
+                content_type="application/json",
+                **headers,
+            )
+            self.assertEqual(created.status_code, 201)
+            self.assertRegex(
+                created.json()["updated_at"],
+                r"T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2})?$",
+            )
+            stored = StoredCredential.objects.get(service="AWS", name="Access key")
+            self.assertEqual(stored.service, "AWS")
+            self.assertEqual(stored.name, "Access key")
+            self.assertNotEqual(stored.encrypted_secret, payload["value"])
+
+            retrieved = self.client.get("/api/stored-credentials?service=aws", **headers)
+            self.assertEqual(retrieved.status_code, 200)
+            self.assertEqual(retrieved.json()[0]["value"], payload["value"])
+            self.assertRegex(
+                retrieved.json()[0]["updated_at"],
+                r"T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2})?$",
+            )
+
+            updated = self.client.post(
+                "/api/stored-credentials",
+                data=json.dumps({**payload, "value": "rotated-secret"}),
+                content_type="application/json",
+                **headers,
+            )
+            self.assertEqual(updated.status_code, 201)
+            self.assertEqual(StoredCredential.objects.count(), 1)
+            retrieved = self.client.get("/api/stored-credentials", **headers)
+            self.assertEqual(retrieved.json()[0]["value"], "rotated-secret")
+            self.assertEqual(
+                self.client.delete(
+                    f"/api/stored-credentials/{stored.id}",
+                    **headers,
+                ).status_code,
+                204,
+            )
+            self.assertFalse(StoredCredential.objects.exists())
+
+    def test_stored_credentials_api_rejects_bad_basic_auth(self):
+        response = self.client.get(
+            "/api/stored-credentials",
+            HTTP_AUTHORIZATION="Basic invalid-token",
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response["WWW-Authenticate"], 'Basic realm="Stored credentials API"')
 
     @patch("tourism.views.fetch_location_pincodes", return_value=["823001", "800001"])
     def test_admin_can_create_list_and_remove_hotels_restaurants_and_guides(self, _mock_pincodes):

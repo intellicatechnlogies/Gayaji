@@ -213,6 +213,7 @@
           <button class="admin-tab" type="button" data-admin-tab="hotels">Manage Hotels</button>
           <button class="admin-tab" type="button" data-admin-tab="restaurants">Manage Restaurants</button>
           <button class="admin-tab" type="button" data-admin-tab="guides">Manage Guides</button>
+          <button class="admin-tab" type="button" data-admin-tab="credentials">Credentials</button>
         </nav>
         <section class="admin-section" data-admin-section="search">
           <section class="admin-overall-search" aria-labelledby="overall-location-search-title">
@@ -395,6 +396,17 @@
           </form>
           <label class="listing-search"><span class="visually-hidden">Search guides</span><input type="search" data-listing-search="guides" placeholder="Search guides by name, location, PIN, language, or contact"></label>
           <div class="admin-listing-list" data-listing-list="guides"></div>
+        </section>
+        <section class="admin-section" data-admin-section="credentials" hidden>
+          <h3>Stored credentials</h3>
+          <p class="admin-description">Secrets are encrypted before storage and are never shown in this list. Encryption uses the existing Django SECRET_KEY; keep it private and unchanged so saved values remain decryptable.</p>
+          <form class="admin-form" id="admin-credential-form" autocomplete="off">
+            <div class="form-field"><label for="credential-service">Service</label><input id="credential-service" name="service" required maxlength="100" placeholder="AWS"></div>
+            <div class="form-field"><label for="credential-name">Credential name</label><input id="credential-name" name="name" required maxlength="120" placeholder="Access key ID"></div>
+            <div class="form-field full"><label for="credential-secret">Secret value</label><input id="credential-secret" name="secret" type="password" required maxlength="10000" autocomplete="new-password"></div>
+            <button class="button" type="submit">Save encrypted credential</button>
+          </form>
+          <div class="admin-table-wrap" id="admin-credential-list" aria-live="polite"></div>
         </section>
       </div>
     </aside>

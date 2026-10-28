@@ -15,6 +15,18 @@ urlpatterns = [
     path("bookings/<str:booking_type>", views.create_typed_booking, name="typed-bookings"),
     path("admin/inquiries", views.admin_inquiries, name="admin-inquiries"),
     path("admin/bookings", views.admin_bookings, name="admin-bookings"),
+    path("admin/credentials", views.admin_credentials, name="admin-credentials"),
+    path("stored-credentials", views.stored_credentials_api, name="stored-credentials-api"),
+    path(
+        "stored-credentials/<int:credential_id>",
+        views.stored_credentials_api_detail,
+        name="stored-credentials-api-detail",
+    ),
+    path(
+        "admin/credentials/<int:credential_id>",
+        views.admin_credential_detail,
+        name="admin-credential-detail",
+    ),
     path("admin/listings/<str:listing_type>", views.admin_listings, name="admin-listings"),
     path(
         "admin/listings/<str:listing_type>/<int:listing_id>",

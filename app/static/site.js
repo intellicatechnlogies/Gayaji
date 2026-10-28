@@ -290,6 +290,57 @@
     placeList.replaceChildren(...places.map(createAdminRow));
   }
 
+  async function refreshStoredCredentials() {
+    const list = document.getElementById('admin-credential-list');
+    const credentials = await apiRequest('/api/admin/credentials');
+    if (!credentials.length) {
+      list.classList.add('admin-table-empty');
+      list.textContent = 'No credentials stored.';
+      return;
+    }
+    list.classList.remove('admin-table-empty');
+    const table = document.createElement('table');
+    table.className = 'admin-table';
+    const head = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    ['Service', 'Credential name', 'Last updated', 'Actions'].forEach((headingText) => {
+      const heading = document.createElement('th');
+      heading.scope = 'col';
+      heading.textContent = headingText;
+      headerRow.append(heading);
+    });
+    head.append(headerRow);
+    const body = document.createElement('tbody');
+    credentials.forEach((credential) => {
+      const row = document.createElement('tr');
+      [credential.service, credential.name, new Date(credential.updated_at).toLocaleString()].forEach((value) => {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.append(cell);
+      });
+      const actions = document.createElement('td');
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'admin-table-delete';
+      remove.textContent = 'Delete';
+      remove.addEventListener('click', async () => {
+        if (!window.confirm(`Delete ${credential.service} credential "${credential.name}"?`)) return;
+        try {
+          await apiRequest(`/api/admin/credentials/${credential.id}`, { method: 'DELETE' });
+          await refreshStoredCredentials();
+          showToast('Credential deleted.');
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      });
+      actions.append(remove);
+      row.append(actions);
+      body.append(row);
+    });
+    table.append(head, body);
+    list.replaceChildren(table);
+  }
+
   async function refreshAdminData() {
     await refreshPlaces();
     await Promise.all(['hotels', 'restaurants', 'guides'].map(refreshListings));
@@ -633,7 +684,32 @@
       document.querySelectorAll('[data-admin-section]').forEach((pane) => {
         pane.hidden = pane.dataset.adminSection !== section;
       });
+      if (section === 'credentials') {
+        try {
+          await refreshStoredCredentials();
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      }
     });
+  });
+
+  document.getElementById('admin-credential-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const payload = Object.fromEntries(new FormData(form));
+      await apiRequest('/api/admin/credentials', { method: 'POST', body: JSON.stringify(payload) });
+      form.reset();
+      await refreshStoredCredentials();
+      showToast('Credential encrypted and saved.');
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
   });
 
   document.querySelectorAll('[data-add-listing]').forEach((button) => {
