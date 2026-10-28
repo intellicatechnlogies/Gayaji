@@ -1,4 +1,6 @@
+from django.core.validators import MinValueValidator, RegexValidator
 from django.db import models
+from django.db.models.functions import Lower
 
 
 class Place(models.Model):
@@ -58,3 +60,92 @@ class AdminSession(models.Model):
 
     class Meta:
         db_table = "admin_sessions"
+
+
+class CityPincode(models.Model):
+    state = models.CharField(max_length=100)
+    city = models.CharField(max_length=100)
+    postal_code = models.CharField(max_length=6, validators=(RegexValidator(r"^\d{6}$"),))
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "city_pincodes"
+        ordering = ("state", "city", "postal_code")
+        constraints = [
+            models.UniqueConstraint(fields=("state", "city", "postal_code"), name="unique_city_pincode")
+        ]
+
+
+class GuideLanguage(models.Model):
+    name = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "guide_languages"
+        ordering = ("name",)
+        constraints = [
+            models.UniqueConstraint(Lower("name"), name="unique_guide_language_ci")
+        ]
+
+
+class Hotel(models.Model):
+    name = models.CharField(max_length=160)
+    website = models.URLField(max_length=500, blank=True)
+    air_conditioning = models.CharField(max_length=10, choices=(("AC", "AC"), ("Non-AC", "Non-AC")))
+    price_range = models.CharField(max_length=100)
+    star_rating = models.PositiveSmallIntegerField(
+        choices=tuple((rating, str(rating)) for rating in range(1, 8)),
+        validators=(MinValueValidator(1),),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "hotels"
+        ordering = ("name",)
+
+
+class HotelLocation(models.Model):
+    hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE, related_name="locations")
+    state = models.CharField(max_length=100)
+    city = models.CharField(max_length=100)
+    postal_code = models.CharField(max_length=6, blank=True, validators=(RegexValidator(r"^\d{6}$"),))
+    contact_info = models.CharField(max_length=160)
+    address = models.TextField()
+
+    class Meta:
+        db_table = "hotel_locations"
+        ordering = ("state", "city", "address")
+
+
+class Restaurant(models.Model):
+    name = models.CharField(max_length=160)
+    state = models.CharField(max_length=100)
+    city = models.CharField(max_length=100)
+    postal_code = models.CharField(max_length=6, blank=True, validators=(RegexValidator(r"^\d{6}$"),))
+    contact_info = models.CharField(max_length=160)
+    address = models.TextField()
+    food_type = models.CharField(max_length=10, choices=(("Veg", "Veg"), ("Non-veg", "Non-veg")))
+    price_range = models.CharField(
+        max_length=20,
+        choices=(("Non-premium", "Non-premium"), ("Medium", "Medium"), ("Premium", "Premium")),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "restaurants"
+        ordering = ("name",)
+
+
+class Guide(models.Model):
+    name = models.CharField(max_length=160)
+    contact_info = models.CharField(max_length=160)
+    state = models.CharField(max_length=100)
+    city = models.CharField(max_length=100)
+    postal_code = models.CharField(max_length=6, blank=True, validators=(RegexValidator(r"^\d{6}$"),))
+    languages = models.CharField(max_length=300)
+    price = models.DecimalField(max_digits=10, decimal_places=2, validators=(MinValueValidator(0),))
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "guides"
+        ordering = ("name",)
