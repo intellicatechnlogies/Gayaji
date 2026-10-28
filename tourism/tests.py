@@ -225,7 +225,7 @@ class TourismApiTests(TestCase):
             run_backup_scheduler(stop_event)
 
         send_backup.assert_called_once_with("send_database_backup")
-        self.assertEqual(BACKUP_INTERVAL_SECONDS, 3600)
+        self.assertEqual(BACKUP_INTERVAL_SECONDS, 600)
 
     def test_backup_scheduler_process_lock_allows_only_one_owner(self):
         with tempfile.TemporaryDirectory() as temp_dir:
