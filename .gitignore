@@ -8,6 +8,8 @@ __pycache__/
 .venv-1/
 venv/
 .github/*
+bodh_gaya_tourism.db
+*.db
 
 # Local configuration and secrets
 .env
