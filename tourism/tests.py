@@ -11,7 +11,7 @@ from django.contrib.staticfiles import finders
 from django.contrib.auth.hashers import make_password
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import CommandError, call_command
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
 from PIL import Image
 
@@ -241,21 +241,22 @@ class TourismApiTests(TestCase):
             self.assertIsNotNone(second_lock)
             second_lock.close()
 
-    def test_app_startup_only_enables_scheduler_for_web_process(self):
-        from tourism.apps import TourismConfig
+    def test_backup_scheduler_starts_only_for_nonlocal_request_hosts(self):
+        from tourism.middleware import BackupSchedulerMiddleware
 
         cases = (
-            ({}, False),
-            ({"RUN_MAIN": "true"}, False),
-            ({"GAYAJI_WEB_PROCESS": "1"}, True),
+            ("localhost:8000", False),
+            ("127.0.0.1:8000", False),
+            ("[::1]:8000", False),
+            ("192.168.1.20:8000", False),
+            ("gayaji.example.com", True),
         )
-        for environment, should_start in cases:
-            with self.subTest(environment=environment):
-                with (
-                    patch.dict("tourism.apps.os.environ", environment, clear=True),
-                    patch("tourism.backup_scheduler.start_backup_scheduler") as start_scheduler,
-                ):
-                    TourismConfig("tourism", __import__("tourism")).ready()
+        for host, should_start in cases:
+            with self.subTest(host=host):
+                request = RequestFactory().get("/", HTTP_HOST=host)
+                middleware = BackupSchedulerMiddleware(lambda _request: None)
+                with patch("tourism.middleware.start_backup_scheduler") as start_scheduler:
+                    middleware(request)
                 self.assertEqual(start_scheduler.called, should_start)
 
     def test_homepage_uses_django_template_and_renders_database_destinations(self):
