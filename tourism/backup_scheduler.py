@@ -7,7 +7,7 @@ from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
-BACKUP_INTERVAL_SECONDS = 60 * 60
+BACKUP_INTERVAL_SECONDS = 10 * 60
 PROCESS_LOCK_RETRY_SECONDS = 5
 logger = logging.getLogger(__name__)
 _scheduler_lock = threading.Lock()
