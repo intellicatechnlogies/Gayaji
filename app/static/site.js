@@ -12,6 +12,7 @@
   const placeList = document.getElementById('admin-place-list');
   const stateCities = JSON.parse(document.getElementById('state-city-data').textContent);
   const adminListingData = { hotels: [], restaurants: [], guides: [] };
+  const adminSectionStorageKey = 'beyondAdminSection';
   document.querySelectorAll('[data-place-image]').forEach((image) => {
     image.addEventListener('error', () => { image.hidden = true; }, { once: true });
   });
@@ -223,6 +224,7 @@
       const credentials = Object.fromEntries(new FormData(loginForm));
       await apiRequest('/api/admin/login', { method: 'POST', body: JSON.stringify(credentials) });
       loginForm.reset();
+      sessionStorage.removeItem(adminSectionStorageKey);
       window.location.assign('/admin/');
     } catch (error) {
       showLoginError(error.message || text('loginError'));
@@ -235,6 +237,7 @@
   document.getElementById('admin-logout').addEventListener('click', async () => {
     try {
       await apiRequest('/api/admin/logout', { method: 'POST' });
+      sessionStorage.removeItem(adminSectionStorageKey);
       if (isAdminPage) {
         window.location.assign('/');
         return;
@@ -674,6 +677,7 @@
   document.querySelectorAll('[data-admin-tab]').forEach((button) => {
     button.addEventListener('click', async () => {
       const section = button.dataset.adminTab;
+      sessionStorage.setItem(adminSectionStorageKey, section);
       document.querySelectorAll('[data-admin-tab]').forEach((tab) => tab.classList.toggle('active', tab === button));
       document.querySelectorAll('[data-admin-section]').forEach((pane) => {
         pane.hidden = pane.dataset.adminSection !== section;
@@ -687,6 +691,12 @@
       }
     });
   });
+  if (isAdminPage) {
+    const savedSection = sessionStorage.getItem(adminSectionStorageKey);
+    const savedTab = [...document.querySelectorAll('[data-admin-tab]')]
+      .find((button) => button.dataset.adminTab === savedSection);
+    if (savedTab) savedTab.click();
+  }
 
   document.getElementById('admin-credential-form').addEventListener('submit', async (event) => {
     event.preventDefault();

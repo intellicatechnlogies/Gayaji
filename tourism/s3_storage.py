@@ -1,6 +1,7 @@
 from io import BytesIO
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from cryptography.fernet import InvalidToken
 from PIL import Image, UnidentifiedImageError
@@ -55,6 +56,7 @@ def get_s3_client():
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=region,
+            config=Config(s3={"addressing_style": "virtual"}),
         )
     except (BotoCoreError, ValueError) as exc:
         raise S3StorageError("Could not configure the S3 client from the saved AWS credentials.") from exc

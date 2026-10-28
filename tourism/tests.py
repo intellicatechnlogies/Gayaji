@@ -24,7 +24,7 @@ from .models import (
     StoredCredential,
     StoredCredentialApiUser,
 )
-from .credential_vault import decrypt_credential
+from .credential_vault import decrypt_credential, encrypt_credential
 from .views import hash_password, verify_password
 
 
@@ -253,6 +253,28 @@ class TourismApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 422)
         self.assertFalse(Place.objects.exists())
+
+    def test_s3_client_uses_regional_virtual_host_addressing_for_signed_links(self):
+        credentials = {
+            "Access_key": "test-access-key",
+            "Secret_access_key": "test-secret-key",
+            "Region": "ap-south-1",
+            "S3bucket": "test-bucket",
+        }
+        for name, value in credentials.items():
+            StoredCredential.objects.create(
+                service="AWS",
+                name=name,
+                encrypted_secret=encrypt_credential(value),
+            )
+
+        with patch("tourism.s3_storage.boto3.client") as client_factory:
+            from tourism.s3_storage import get_s3_client
+
+            get_s3_client()
+
+        config = client_factory.call_args.kwargs["config"]
+        self.assertEqual(config.s3, {"addressing_style": "virtual"})
 
     @staticmethod
     def valid_place_image():
