@@ -27,7 +27,7 @@ class Inquiry(models.Model):
 
 
 class Booking(models.Model):
-    booking_type = models.CharField(max_length=30)
+    booking_type = models.CharField(max_length=100)
     name = models.CharField(max_length=160)
     email = models.CharField(max_length=254)
     phone = models.CharField(max_length=40)
@@ -40,6 +40,44 @@ class Booking(models.Model):
     class Meta:
         db_table = "bookings"
         ordering = ("-created_at",)
+
+
+class PlanningRequest(models.Model):
+    request_type = models.CharField(max_length=20)
+    name = models.CharField(max_length=160)
+    email = models.CharField(max_length=254)
+    phone = models.CharField(max_length=40, blank=True)
+    arrangements = models.TextField(blank=True)
+    services = models.TextField(blank=True)
+    destinations = models.CharField(max_length=160, blank=True)
+    travel_date = models.CharField(max_length=30, blank=True)
+    guests = models.PositiveSmallIntegerField(null=True, blank=True)
+    message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "planning_requests"
+        ordering = ("-created_at",)
+
+
+class NotificationOutbox(models.Model):
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        SENDING = "sending", "Sending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.QUEUED)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "notification_outbox"
+        ordering = ("created_at",)
 
 
 class AdminAccount(models.Model):
@@ -155,6 +193,43 @@ class Restaurant(models.Model):
 
     class Meta:
         db_table = "restaurants"
+        ordering = ("name",)
+
+
+class Van(models.Model):
+    VEHICLE_TYPES = (
+        ("AC Van", "AC Van"),
+        ("Non-AC Van", "Non-AC Van"),
+        ("Other", "Other"),
+    )
+
+    name = models.CharField(max_length=160)
+    state = models.CharField(max_length=100)
+    city = models.CharField(max_length=100)
+    postal_code = models.CharField(max_length=6, blank=True, validators=(RegexValidator(r"^\d{6}$"),))
+    contact_info = models.CharField(max_length=160)
+    address = models.TextField()
+    vehicle_type = models.CharField(max_length=30, choices=VEHICLE_TYPES)
+    seat_capacity = models.PositiveSmallIntegerField(validators=(MinValueValidator(1),))
+    booking_charge_per_day = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=(MinValueValidator(0),),
+    )
+    per_km_charge = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=(MinValueValidator(0),),
+    )
+    price_range = models.CharField(max_length=100, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "vans"
         ordering = ("name",)
 
 

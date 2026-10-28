@@ -19,6 +19,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.middleware.common.CommonMiddleware",
     "tourism.middleware.BackupSchedulerMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -55,6 +56,7 @@ USE_TZ = False
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STATICFILES_DIRS = [BASE_DIR / "app" / "static"]
+WHITENOISE_USE_FINDERS = True
 
 # Media files (uploads)
 MEDIA_URL = '/media/'

@@ -2,8 +2,8 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import secrets
-import smtplib
 from datetime import timedelta
 from json import JSONDecodeError
 from urllib.error import URLError
@@ -15,7 +15,7 @@ from django.contrib.auth.hashers import check_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
-from django.core.mail import send_mail
+from django.core.management.base import CommandError
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
@@ -39,11 +39,14 @@ from .models import (
     HotelLocation,
     Inquiry,
     Place,
+    PlanningRequest,
     Restaurant,
     StoredCredential,
     StoredCredentialApiUser,
+    Van,
 )
 from .credential_vault import decrypt_credential, encrypt_credential
+from .email_utils import queue_notification_email, send_notification_email
 from .s3_storage import (
     S3StorageError,
     delete_place_image,
@@ -55,6 +58,21 @@ from cryptography.fernet import InvalidToken
 
 ADMIN_SESSION_COOKIE = "beyond_admin_session"
 ADMIN_SESSION_DURATION = timedelta(hours=12)
+BOOKING_DESTINATIONS = ("Bodh Gaya", "Gaya", "Nalanda", "Rajgir")
+BOOKING_TYPES = {
+    "complete-trip": "Plan my complete trip",
+    "hotel": "Hotel / accommodation",
+    "cab": "Cab / private van",
+    "guided": "Guided visit",
+}
+ARRANGEMENT_OPTIONS = {
+    "complete-trip": "Plan my complete trip",
+    "accommodation": "Accommodation / stay",
+    "private-van": "Private van or cab",
+    "guided-visits": "Guided visits and tours",
+    "custom": "Something else",
+}
+logger = logging.getLogger(__name__)
 PLACE_FIELDS = {
     "name": (2, 160),
     "description": (10, None),
@@ -64,6 +82,7 @@ PLACE_FIELDS = {
 ADMIN_LISTING_MODELS = {
     "hotels": Hotel,
     "restaurants": Restaurant,
+    "vans": Van,
     "guides": Guide,
 }
 POSTAL_CITY_QUERY_ALIASES = {
@@ -124,7 +143,6 @@ def validate_contact(data: dict, *, booking: bool = False) -> dict:
     if booking:
         rules.update(
             phone=(7, 40),
-            destination=(2, 160),
             travel_date=(8, 30),
         )
     else:
@@ -136,15 +154,77 @@ def validate_contact(data: dict, *, booking: bool = False) -> dict:
         except ValidationError:
             errors["email"] = "Enter a valid email address."
     if booking:
-        booking_type = data.get("booking_type")
-        if booking_type not in {"hotel", "cab", "guided"}:
-            errors["booking_type"] = "Must be hotel, cab or guided."
+        raw_destinations = data.get("destinations", data.get("destination"))
+        if isinstance(raw_destinations, str):
+            requested_destinations = raw_destinations.split(",")
+        elif isinstance(raw_destinations, list):
+            requested_destinations = raw_destinations
+        else:
+            requested_destinations = []
+        destination_lookup = {region.casefold(): region for region in BOOKING_DESTINATIONS}
+        normalized_destinations = []
+        has_invalid_destination = not requested_destinations
+        for destination in requested_destinations:
+            if not isinstance(destination, str):
+                has_invalid_destination = True
+                continue
+            normalized = destination.strip()
+            canonical = destination_lookup.get(normalized.casefold())
+            if canonical is None:
+                has_invalid_destination = True
+            elif canonical not in normalized_destinations:
+                normalized_destinations.append(canonical)
+        data["destination"] = ", ".join(normalized_destinations)
+        data.pop("destinations", None)
+        if (
+            has_invalid_destination
+            or not normalized_destinations
+            or len(data["destination"]) > 160
+        ):
+            errors["destination"] = "Select one or more valid destinations."
+        raw_booking_types = data.get("booking_types", data.get("booking_type"))
+        if isinstance(raw_booking_types, str):
+            requested_booking_types = [raw_booking_types]
+        elif isinstance(raw_booking_types, list):
+            requested_booking_types = raw_booking_types
+        else:
+            requested_booking_types = []
+        normalized_booking_types = []
+        for booking_type in requested_booking_types:
+            if not isinstance(booking_type, str) or booking_type not in BOOKING_TYPES:
+                errors["booking_type"] = "Select one or more valid services."
+                continue
+            if booking_type not in normalized_booking_types:
+                normalized_booking_types.append(booking_type)
+        if not normalized_booking_types:
+            errors["booking_type"] = "Select one or more services."
+        data["booking_type"] = ", ".join(normalized_booking_types)
+        data.pop("booking_types", None)
         guests = data.get("guests", 1)
         if isinstance(guests, bool) or not isinstance(guests, int) or not 1 <= guests <= 30:
             errors["guests"] = "Must be a whole number between 1 and 30."
         notes = data.get("notes")
         if notes is not None and (not isinstance(notes, str) or len(notes) > 2000):
             errors["notes"] = "Must be text of no more than 2000 characters."
+    else:
+        raw_arrangements = data.get("arrangements", data.get("service"))
+        if isinstance(raw_arrangements, str):
+            requested_arrangements = [raw_arrangements]
+        elif isinstance(raw_arrangements, list):
+            requested_arrangements = raw_arrangements
+        else:
+            requested_arrangements = []
+        normalized_arrangements = []
+        for arrangement in requested_arrangements:
+            if not isinstance(arrangement, str) or arrangement not in ARRANGEMENT_OPTIONS:
+                errors["arrangements"] = "Select one or more valid arrangements."
+                continue
+            if arrangement not in normalized_arrangements:
+                normalized_arrangements.append(arrangement)
+        if not normalized_arrangements:
+            errors["arrangements"] = "Select one or more arrangements."
+        data["arrangements"] = normalized_arrangements
+        data.pop("service", None)
     return errors
 
 
@@ -222,16 +302,6 @@ def unauthorized() -> JsonResponse:
     return JsonResponse({"detail": "Admin login required"}, status=401)
 
 
-def send_email_alert(subject: str, message: str) -> bool:
-    if not settings.EMAIL_HOST or not settings.ALERT_EMAIL:
-        return False
-    try:
-        return send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [settings.ALERT_EMAIL], fail_silently=False) > 0
-    except (OSError, smtplib.SMTPException, ValueError) as exc:
-        print(f"Email alert could not be sent: {exc}")
-        return False
-
-
 def home(request: HttpRequest, admin_page: bool = False) -> HttpResponse:
     places = [place_data(place) for place in Place.objects.all()]
     state_cities = {state: set(cities) for state, cities in STATE_CITIES.items()}
@@ -244,12 +314,13 @@ def home(request: HttpRequest, admin_page: bool = False) -> HttpResponse:
         "tourism/home.html",
         {
             "places": places,
-            "regions": ("Bodh Gaya", "Gaya", "Nalanda", "Rajgir"),
+            "regions": BOOKING_DESTINATIONS,
             "state_cities": {
                 state: sorted(cities, key=str.casefold)
                 for state, cities in state_cities.items()
             },
             "guide_languages": guide_languages,
+            "van_types": Van.VEHICLE_TYPES,
             "admin_page": admin_page,
         },
     )
@@ -545,19 +616,40 @@ def create_inquiry(request: HttpRequest) -> JsonResponse:
     errors = validate_contact(data)
     if errors:
         return JsonResponse({"detail": errors}, status=422)
-    inquiry = Inquiry.objects.create(name=data["name"], email=data["email"], message=data["message"])
-    sent = send_email_alert(
-        f"New Bihar Beyond inquiry from {inquiry.name}",
-        f"Name: {inquiry.name}\nEmail: {inquiry.email}\n\nMessage:\n{inquiry.message}",
+    arrangements = "\n".join(
+        f"- {ARRANGEMENT_OPTIONS[key]}" for key in data["arrangements"]
     )
+    message = f"Requested arrangements:\n{arrangements}\n\n{data['message']}"
+    try:
+        with transaction.atomic():
+            inquiry = Inquiry.objects.create(name=data["name"], email=data["email"], message=message)
+            PlanningRequest.objects.create(
+                request_type="inquiry",
+                name=data["name"],
+                email=data["email"],
+                arrangements=", ".join(
+                    ARRANGEMENT_OPTIONS[key] for key in data["arrangements"]
+                ),
+                message=data["message"],
+            )
+            queue_notification_email(
+                f"New Bihar Beyond inquiry from {data['name']}",
+                f"Name: {data['name']}\nEmail: {data['email']}\n\n{message}",
+            )
+    except CommandError:
+        logger.exception("Could not queue contact inquiry email.")
+        return JsonResponse(
+            {"detail": "Your message could not be queued. Please try again later."},
+            status=503,
+        )
     return JsonResponse(
-        {"id": inquiry.id, "message": "Thank you — your message has been received.", "email_sent": sent},
+        {"id": inquiry.id, "message": "Thank you — your message has been received.", "email_queued": True},
         status=201,
     )
 
 
 def save_booking(data: dict) -> Booking:
-    booking = Booking.objects.create(
+    return Booking.objects.create(
         booking_type=data["booking_type"],
         name=data["name"],
         email=data["email"],
@@ -567,13 +659,146 @@ def save_booking(data: dict) -> Booking:
         guests=data.get("guests", 1),
         notes=data.get("notes"),
     )
-    send_email_alert(
-        f"New {booking.booking_type} request from {booking.name}",
-        f"Type: {booking.booking_type}\nName: {booking.name}\nEmail: {booking.email}\nPhone: {booking.phone}\n"
-        f"Destination: {booking.destination}\nDate: {booking.travel_date}\nGuests: {booking.guests}\n"
-        f"Notes: {booking.notes or '—'}",
+
+
+def booking_notification_content(data: dict) -> tuple[str, str]:
+    service_labels = ", ".join(
+        BOOKING_TYPES.get(value, value) for value in data["booking_type"].split(", ")
     )
-    return booking
+    return (
+        f"New trip request from {data['name']}",
+        (
+            f"Services: {service_labels}\nName: {data['name']}\nEmail: {data['email']}\n"
+            f"Phone: {data['phone']}\nDestination: {data['destination']}\n"
+            f"Date: {data['travel_date']}\nGuests: {data.get('guests', 1)}\n"
+            f"Notes: {data.get('notes') or '—'}"
+        ),
+    )
+
+
+def send_booking_notification(data: dict) -> None:
+    send_notification_email(*booking_notification_content(data))
+
+
+def create_booking_response(data: dict) -> JsonResponse:
+    try:
+        with transaction.atomic():
+            booking = save_booking(data)
+            PlanningRequest.objects.create(
+                request_type="trip",
+                name=data["name"],
+                email=data["email"],
+                phone=data["phone"],
+                services=", ".join(
+                    BOOKING_TYPES[value] for value in data["booking_type"].split(", ")
+                ),
+                destinations=data["destination"],
+                travel_date=data["travel_date"],
+                guests=data.get("guests", 1),
+                message=data.get("notes") or "",
+            )
+            queue_notification_email(*booking_notification_content(data))
+    except CommandError:
+        logger.exception("Could not queue travel request email.")
+        return JsonResponse(
+            {"detail": "The travel request could not be queued. Please try again later."},
+            status=503,
+        )
+    return JsonResponse(booking_data(booking), status=201)
+
+
+def planning_request_data(item: PlanningRequest) -> dict:
+    return {
+        "id": item.id,
+        "request_type": item.request_type,
+        "name": item.name,
+        "email": item.email,
+        "phone": item.phone,
+        "arrangements": item.arrangements,
+        "services": item.services,
+        "destinations": item.destinations,
+        "travel_date": item.travel_date,
+        "guests": item.guests,
+        "message": item.message,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    }
+
+
+@require_http_methods(["GET"])
+def admin_planning_requests(request: HttpRequest) -> JsonResponse:
+    if current_admin(request) is None:
+        return unauthorized()
+    requests = PlanningRequest.objects.all()[:500]
+    return JsonResponse(
+        [planning_request_data(item) for item in requests],
+        safe=False,
+        encoder=DjangoJSONEncoder,
+    )
+
+
+@csrf_exempt
+@require_http_methods(["PATCH", "PUT", "DELETE"])
+def admin_planning_request_detail(request: HttpRequest, request_id: int) -> HttpResponse:
+    if current_admin(request) is None:
+        return unauthorized()
+    item = PlanningRequest.objects.filter(pk=request_id).first()
+    if item is None:
+        return JsonResponse({"detail": "Planning request not found"}, status=404)
+    if request.method == "DELETE":
+        item.delete()
+        return HttpResponse(status=204)
+
+    data, error = json_body(request)
+    if error:
+        return error
+    fields = {
+        "request_type": (item, "request_type", 20),
+        "name": (item, "name", 160),
+        "email": (item, "email", 254),
+        "phone": (item, "phone", 40),
+        "arrangements": (item, "arrangements", None),
+        "services": (item, "services", None),
+        "destinations": (item, "destinations", 160),
+        "travel_date": (item, "travel_date", 30),
+        "message": (item, "message", None),
+    }
+    allowed_fields = set(fields) | {"guests"}
+    if not data or set(data) - allowed_fields:
+        return JsonResponse({"detail": "Provide valid planning request fields."}, status=422)
+    errors = {}
+    for field, value in data.items():
+        if field == "guests":
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 30
+            ):
+                errors[field] = "Must be a whole number between 1 and 30."
+            else:
+                item.guests = value
+            continue
+        if not isinstance(value, str):
+            errors[field] = "Must be text."
+            continue
+        instance, attribute, maximum = fields[field]
+        normalized = value.strip()
+        if field in {"name", "email"} and not normalized:
+            errors[field] = "This field is required."
+            continue
+        if maximum is not None and len(normalized) > maximum:
+            errors[field] = f"Must be no more than {maximum} characters."
+            continue
+        setattr(instance, attribute, normalized)
+    if "request_type" in data and item.request_type not in {"trip", "inquiry"}:
+        errors["request_type"] = "Must be trip or inquiry."
+    if "email" in data and "email" not in errors:
+        try:
+            validate_email(item.email)
+        except ValidationError:
+            errors["email"] = "Enter a valid email address."
+    if errors:
+        return JsonResponse({"detail": errors}, status=422)
+    item.save()
+    return JsonResponse(planning_request_data(item), encoder=DjangoJSONEncoder)
 
 
 @csrf_exempt
@@ -585,13 +810,13 @@ def create_booking(request: HttpRequest) -> JsonResponse:
     errors = validate_contact(data, booking=True)
     if errors:
         return JsonResponse({"detail": errors}, status=422)
-    return JsonResponse(booking_data(save_booking(data)), status=201)
+    return create_booking_response(data)
 
 
 @csrf_exempt
 @require_http_methods(["POST"])
 def create_typed_booking(request: HttpRequest, booking_type: str) -> JsonResponse:
-    if booking_type not in {"hotel", "cab", "guided"}:
+    if booking_type not in BOOKING_TYPES:
         return JsonResponse({"detail": "Booking type must be hotel, cab or guided"}, status=404)
     data, error = json_body(request)
     if error:
@@ -601,7 +826,7 @@ def create_typed_booking(request: HttpRequest, booking_type: str) -> JsonRespons
         return JsonResponse({"detail": errors}, status=422)
     if data["booking_type"] != booking_type:
         return JsonResponse({"detail": "Booking type in the URL and request body must match"}, status=422)
-    return JsonResponse(booking_data(save_booking(data)), status=201)
+    return create_booking_response(data)
 
 
 @require_http_methods(["GET"])
@@ -789,7 +1014,7 @@ def stored_credentials_api_detail(request: HttpRequest, credential_id: int) -> H
 def admin_listings(request: HttpRequest, listing_type: str) -> JsonResponse:
     model = ADMIN_LISTING_MODELS.get(listing_type)
     if model is None:
-        return JsonResponse({"detail": "Listing type must be hotels, restaurants or guides"}, status=404)
+        return JsonResponse({"detail": "Listing type must be hotels, restaurants, vans or guides"}, status=404)
     if current_admin(request) is None:
         return unauthorized()
     if request.method == "GET":
@@ -913,7 +1138,11 @@ def admin_listings(request: HttpRequest, listing_type: str) -> JsonResponse:
         )
 
     if request.method == "GET":
-        fields = [field.name for field in model._meta.concrete_fields]
+        fields = [
+            field.name
+            for field in model._meta.concrete_fields
+            if not (listing_type == "vans" and field.name == "price_range")
+        ]
         return JsonResponse(
             [{field: getattr(item, field) for field in fields} for item in model.objects.all()],
             safe=False,
@@ -930,9 +1159,18 @@ def admin_listings(request: HttpRequest, listing_type: str) -> JsonResponse:
         field.name
         for field in model._meta.concrete_fields
         if field.name not in {"id", "created_at"}
+        and not (listing_type == "vans" and field.name == "price_range")
     }
     if set(data) != fields:
         return JsonResponse({"detail": "Please provide all required listing fields."}, status=422)
+    if listing_type == "vans" and any(
+        data.get(field) in (None, "")
+        for field in ("booking_charge_per_day", "per_km_charge")
+    ):
+        return JsonResponse(
+            {"detail": "Provide both the daily booking charge and per-kilometre charge."},
+            status=422,
+        )
     guide_languages = []
     if listing_type == "guides":
         submitted_languages = data.get("languages")
@@ -1005,7 +1243,7 @@ def admin_listings(request: HttpRequest, listing_type: str) -> JsonResponse:
 def admin_listing_detail(request: HttpRequest, listing_type: str, listing_id: int) -> HttpResponse:
     model = ADMIN_LISTING_MODELS.get(listing_type)
     if model is None:
-        return JsonResponse({"detail": "Listing type must be hotels, restaurants or guides"}, status=404)
+        return JsonResponse({"detail": "Listing type must be hotels, restaurants, vans or guides"}, status=404)
     if current_admin(request) is None:
         return unauthorized()
     item = model.objects.filter(pk=listing_id).first()

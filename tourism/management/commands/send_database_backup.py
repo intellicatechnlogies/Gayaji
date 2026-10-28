@@ -4,42 +4,23 @@ import smtplib
 import sqlite3
 import tempfile
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.header import decode_header, make_header
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
-from cryptography.fernet import InvalidToken
-from django.core.mail import EmailMessage, get_connection
+from django.core.mail import EmailMessage
 from django.core.management.base import BaseCommand, CommandError
 
-from tourism.credential_vault import decrypt_credential
-from tourism.models import StoredCredential
+from tourism.email_utils import EMAIL_ADDRESS, get_email_connection, stored_email_credential
 
-BACKUP_EMAIL = "raumishji@gmail.com"
+BACKUP_EMAIL = EMAIL_ADDRESS
 BACKUP_SUBJECT = "Gaya Ji - DB Backup"
 MAILBOXES = ("INBOX",)
 IMAP_HOST = "imap.gmail.com"
-RETAIN_PER_MAILBOX = 2
-
-
-def stored_email_credential(name: str) -> str:
-    credential = StoredCredential.objects.filter(
-        service__iexact="Email",
-        name__iexact=name,
-    ).first()
-    if credential is None:
-        raise CommandError(f"Missing Email credential: {name}.")
-    try:
-        value = decrypt_credential(credential.encrypted_secret)
-    except (InvalidToken, UnicodeError) as exc:
-        raise CommandError(
-            f"Email credential {name} cannot be decrypted. Save it again through the credentials API."
-        ) from exc
-    if not value.strip():
-        raise CommandError(f"Email credential {name} is empty.")
-    return value.strip()
+BACKUP_RETENTION = timedelta(hours=48)
 
 
 def database_backup(database_path: Path, backup_path: Path) -> None:
@@ -82,6 +63,18 @@ def _is_backup_for_account(header: Any, address: str) -> bool:
     )
 
 
+def _is_expired_backup(internal_date: str, now: datetime | None = None) -> bool:
+    try:
+        received_at = datetime.strptime(
+            internal_date,
+            "%d-%b-%Y %H:%M:%S %z",
+        ).astimezone(timezone.utc)
+    except ValueError as exc:
+        raise CommandError("Could not parse a backup email's Gmail receive date.") from exc
+    current_time = now or datetime.now(timezone.utc)
+    return received_at < current_time - BACKUP_RETENTION
+
+
 def _sent_mailbox(connection: imaplib.IMAP4_SSL) -> str:
     status, mailboxes = connection.list()
     if status != "OK":
@@ -111,12 +104,12 @@ def _prune_mailbox(connection: imaplib.IMAP4_SSL, mailbox: str, address: str) ->
     if status != "OK":
         raise CommandError(f"Could not search Gmail mailbox {mailbox}.")
 
-    matching_uids = []
+    expired_uids = []
     for uid in (results or [b""])[0].split():
         status, response = connection.uid(
             "fetch",
             uid,
-            "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO)])",
+            "(INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO)])",
         )
         if status != "OK":
             raise CommandError(f"Could not inspect a message in Gmail mailbox {mailbox}.")
@@ -130,19 +123,32 @@ def _prune_mailbox(connection: imaplib.IMAP4_SSL, mailbox: str, address: str) ->
         )
         header = message_from_bytes(raw_header)
         if _is_backup_for_account(header, address):
-            matching_uids.append(uid)
+            metadata = next(
+                (
+                    part[0]
+                    for part in response or []
+                    if isinstance(part, tuple) and isinstance(part[0], bytes)
+                ),
+                b"",
+            )
+            internal_date_match = re.search(rb'INTERNALDATE "([^"]+)"', metadata)
+            if internal_date_match is None:
+                raise CommandError(
+                    f"Could not read the receive date of a backup in Gmail mailbox {mailbox}."
+                )
+            internal_date = internal_date_match.group(1).decode("ascii")
+            if _is_expired_backup(internal_date):
+                expired_uids.append(uid)
 
-    matching_uids.sort(key=lambda uid: int(uid), reverse=True)
-    old_uids = matching_uids[RETAIN_PER_MAILBOX:]
-    for uid in old_uids:
+    for uid in expired_uids:
         status, _ = connection.uid("store", uid, "+FLAGS.SILENT", r"(\Deleted)")
         if status != "OK":
             raise CommandError(f"Could not mark an old backup for deletion in {mailbox}.")
-    if old_uids:
+    if expired_uids:
         status, _ = connection.expunge()
         if status != "OK":
             raise CommandError(f"Could not permanently delete old backups from {mailbox}.")
-    return len(old_uids)
+    return len(expired_uids)
 
 
 def prune_old_backups(address: str, app_password: str) -> int:
@@ -167,18 +173,10 @@ def prune_old_backups(address: str, app_password: str) -> int:
 
 
 class Command(BaseCommand):
-    help = "Email a SQLite database backup and retain the two newest copies in Gmail Inbox and Sent."
+    help = "Email a SQLite database backup and retain matching messages from the last 48 hours."
 
     def handle(self, *args, **options):
-        host = stored_email_credential("SMTP_Server")
-        port_value = stored_email_credential("Port")
         app_password = stored_email_credential("App_Password").replace(" ", "")
-        try:
-            port = int(port_value)
-        except ValueError as exc:
-            raise CommandError("Email credential Port must be a valid port number.") from exc
-        if not 1 <= port <= 65535:
-            raise CommandError("Email credential Port must be between 1 and 65535.")
 
         database_path = Path(settings.DATABASES["default"]["NAME"])
         if settings.DATABASES["default"]["ENGINE"] != "django.db.backends.sqlite3":
@@ -192,16 +190,7 @@ class Command(BaseCommand):
             except OSError as exc:
                 raise CommandError("Could not read the generated database backup.") from exc
 
-        use_ssl = port == 465
-        connection = get_connection(
-            host=host,
-            port=port,
-            username=BACKUP_EMAIL,
-            password=app_password,
-            use_tls=port == 587,
-            use_ssl=use_ssl,
-            timeout=20,
-        )
+        connection = get_email_connection()
         message = EmailMessage(
             subject=BACKUP_SUBJECT,
             body="Automated five-minute backup of the Gaya Ji SQLite database.",

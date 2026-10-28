@@ -6,7 +6,7 @@ from .backup_scheduler import start_backup_scheduler
 
 def _is_local_host(host: str) -> bool:
     hostname = (urlsplit(f"//{host}").hostname or "").rstrip(".").casefold()
-    if hostname == "localhost" or hostname.endswith(".localhost"):
+    if hostname in {"localhost", "testserver"} or hostname.endswith(".localhost"):
         return True
     try:
         address = ipaddress.ip_address(hostname)
